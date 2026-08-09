@@ -1,0 +1,6 @@
+# Emscripten SDK (install locally via emsdk/emsdk install/activate; not tracked)
+/emsdk/
+
+# Build output
+/build/
+/dist/
