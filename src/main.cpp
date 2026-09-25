@@ -24,6 +24,7 @@
 // Entity includes
 #include "entities/worm.h"
 #include "entities/explosion.h"
+#include "entities/projectile.h"
 
 // Weapon includes
 #include "weapons/index.h"
@@ -49,6 +50,7 @@ struct GameState {
     Terrain::TerrainSystem* terrain = nullptr;
     std::vector<std::vector<Entities::Worm*>> worms;
     std::vector<Entities::Explosion> explosions;
+    std::vector<Entities::Projectile> projectiles;
     TurnSystem turn = TurnSystem({}, 0);
     GameCamera camera;
     std::string weapon = "bazooka";
@@ -231,6 +233,28 @@ void update(float dt) {
     // Update physics world
     state->world->step(dt, 8, 3);
     
+    // Update projectiles: fly, react to wind/bounces, and detonate when due.
+    // Any resulting explosions are collected and appended to the render list.
+    std::vector<Entities::Explosion> projExplosions;
+    for (auto& p : state->projectiles) {
+        p.update(state->world, dt, state->worms, &projExplosions);
+    }
+    for (auto& e : projExplosions) {
+        state->explosions.push_back(e);
+    }
+    // Dead shells' Box2D bodies are owned by World, so free them before the
+    // erase below drops the Projectile objects (avoids leaking b2Bodies).
+    for (auto& p : state->projectiles) {
+        if (!p.isAlive() && p.body) {
+            state->world->destroyBody(p.body);
+            p.body = nullptr;
+        }
+    }
+    state->projectiles.erase(
+        std::remove_if(state->projectiles.begin(), state->projectiles.end(),
+            [](const Entities::Projectile& p) { return !p.isAlive(); }),
+        state->projectiles.end());
+    
     // Update terrain
     state->terrain->update(dt);
     
@@ -287,15 +311,20 @@ void fireWeapon() {
     Vector2 pos = worm->getPosition();
     Vector2 mouseWorld = state->camera.screenToWorld((Vector2){(float)Input::getMouseScreenX(), (float)Input::getMouseScreenY()});
     float angle = atan2f(mouseWorld.y - pos.y * Terrain::PPM, mouseWorld.x - pos.x * Terrain::PPM);
+
+    // Snapshot the current wind once so the shell is pushed by a steady value
+    // across its whole flight (turn's getWind() otherwise returns a fresh
+    // random each call).
+    float wind = state->turn.getWind();
     
     if (state->weapon == "bazooka") {
-        weapons.bazooka.fire(worm, angle, state->chargeLevel, state->world, 
-                           state->terrain ? state->terrain->chunks : std::vector<std::vector<Terrain::Chunk*>>{},
-                           state->worms);
+        Entities::Projectile p = weapons.bazooka.fire(worm, angle, state->chargeLevel,
+                                                       state->world, state->terrain, wind);
+        if (p.isAlive() && p.body) state->projectiles.push_back(std::move(p));
     } else if (state->weapon == "grenade") {
-        weapons.grenade.fire(worm, angle, state->chargeLevel, state->world,
-                            state->terrain ? state->terrain->chunks : std::vector<std::vector<Terrain::Chunk*>>{},
-                            state->worms);
+        Entities::Projectile p = weapons.grenade.fire(worm, angle, state->chargeLevel,
+                                                       state->world, state->terrain, wind);
+        if (p.isAlive() && p.body) state->projectiles.push_back(std::move(p));
     }
     
     Audio::playSound("fire");
@@ -312,6 +341,7 @@ void renderFrame(float dt) {
            state->terrain ? state->terrain->chunks : std::vector<std::vector<Terrain::Chunk*>>{},
            flattenWorms(),
            state->explosions,
+           state->projectiles,
            GetScreenWidth(), GetScreenHeight());
     
     // Render HUD

@@ -4,7 +4,7 @@
 #include <string>
 
 class GameCamera;
-namespace Entities { class Worm; class Explosion; }
+namespace Entities { class Worm; class Explosion; class Projectile; }
 namespace Terrain { struct Chunk; }
 
 using ChunkGrid = std::vector<std::vector<Terrain::Chunk*>>;
@@ -12,6 +12,7 @@ using ChunkGrid = std::vector<std::vector<Terrain::Chunk*>>;
 void render(const GameCamera& camera, const ChunkGrid& chunks, 
             const std::vector<Entities::Worm*>& worms,
             const std::vector<Entities::Explosion>& explosions,
+            const std::vector<Entities::Projectile>& projectiles,
             int screenWidth, int screenHeight);
 
 struct HUDState {

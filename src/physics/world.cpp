@@ -4,8 +4,11 @@
 #include <box2d/b2_polygon_shape.h>
 #include <box2d/b2_world.h>
 #include <box2d/b2_world_callbacks.h>
+#include <box2d/b2_contact.h>
+#include <box2d/b2_collision.h>
 #include <vector>
 #include <memory>
+#include <map>
 
 namespace {
 // Collects the closest non-ignored fixture hit from a world ray-cast. Returning
@@ -28,22 +31,67 @@ public:
 };
 } // namespace
 
+// A body registry + contact recorder so weapons can classify contact hits
+// (worm vs terrain vs projectile) and resolve them *outside* Box2D callbacks,
+// which Box2D forbids destroying bodies from inside.
 class World::Impl {
 public:
     b2World* world = nullptr;
     std::vector<b2Body*> bodies;
-    
-    Impl(float gx, float gy) {
-        b2Vec2 gravity(gx, gy);
-        world = new b2World(gravity);
-        world->SetAllowSleeping(true);
-        world->SetWarmStarting(true);
+    b2ContactListener* listener = nullptr;
+    std::map<void*, BodyKind> bodyKinds;
+    std::map<void*, std::map<void*, BodyContact>> contacts;
+
+    Impl(float gx, float gy);
+    ~Impl();
+};
+
+namespace {
+// Records every contact so weapons can resolve them *outside* the callback
+// (Box2D forbids destroying bodies from inside a contact callback). We keep,
+// per body, the set of bodies it is currently touching along with the normal
+// and contact point of the most recent BeginContact with each.
+class WorldContactListener : public b2ContactListener {
+public:
+    World::Impl* owner;
+    explicit WorldContactListener(World::Impl* o) : owner(o) {}
+    void BeginContact(b2Contact* contact) override {
+        b2Body* a = contact->GetFixtureA()->GetBody();
+        b2Body* b = contact->GetFixtureB()->GetBody();
+        b2WorldManifold mf;
+        contact->GetWorldManifold(&mf);
+        World::BodyContact ca;
+        ca.body = b;
+        ca.normal = mf.normal;
+        ca.point = mf.points[0];
+        owner->contacts[a][b] = ca;
+        World::BodyContact cb;
+        cb.body = a;
+        cb.normal = mf.normal;
+        cb.point = mf.points[0];
+        owner->contacts[b][a] = cb;
     }
-    
-    ~Impl() {
-        delete world;
+    void EndContact(b2Contact* contact) override {
+        b2Body* a = contact->GetFixtureA()->GetBody();
+        b2Body* b = contact->GetFixtureB()->GetBody();
+        owner->contacts[a].erase(b);
+        owner->contacts[b].erase(a);
     }
 };
+} // namespace
+
+World::Impl::Impl(float gx, float gy) {
+    b2Vec2 gravity(gx, gy);
+    world = new b2World(gravity);
+    world->SetAllowSleeping(true);
+    world->SetWarmStarting(true);
+    listener = new WorldContactListener(this);
+    world->SetContactListener(listener);
+}
+
+World::Impl::~Impl() {
+    delete world;
+}
 
 World::World(float gravityX, float gravityY) : impl_(new Impl(gravityX, gravityY)) {}
 
@@ -51,8 +99,8 @@ World::~World() {
     delete static_cast<Impl*>(impl_);
 }
 
-void* World::createBody(float x, float y, bool fixedRotation, 
-                        float linearDamping, float angularDamping, 
+void* World::createBody(float x, float y, bool fixedRotation,
+                        float linearDamping, float angularDamping,
                         float sleepThreshold, bool isStatic) {
     auto* impl = static_cast<Impl*>(impl_);
     b2BodyDef def;
@@ -62,7 +110,7 @@ void* World::createBody(float x, float y, bool fixedRotation,
     def.linearDamping = linearDamping;
     def.angularDamping = angularDamping;
     (void)sleepThreshold;
-    
+
     b2Body* body = impl->world->CreateBody(&def);
     impl->bodies.push_back(body);
     return static_cast<void*>(body);
@@ -72,7 +120,7 @@ void World::destroyBody(void* body) {
     if (!body) return;
     auto* impl = static_cast<Impl*>(impl_);
     b2Body* b = static_cast<b2Body*>(body);
-    
+
     for (auto it = impl->bodies.begin(); it != impl->bodies.end(); ++it) {
         if (*it == b) {
             impl->world->DestroyBody(b);
@@ -80,6 +128,12 @@ void World::destroyBody(void* body) {
             break;
         }
     }
+
+    // Drop any stale contact/kind records for the destroyed body so a hit can
+    // never be classified against a body that no longer exists.
+    impl->contacts.erase(b);
+    for (auto& kv : impl->contacts) kv.second.erase(b);
+    impl->bodyKinds.erase(b);
 }
 
 void* World::createPolygonFixture(void* body, const std::vector<Vector2>& verts, float friction) {
@@ -88,23 +142,23 @@ void* World::createPolygonFixture(void* body, const std::vector<Vector2>& verts,
 
 void* World::createPolygonFixture(void* body, const std::vector<Vector2>& verts, float density, float friction) {
     if (!body || verts.size() < 3) return nullptr;
-    
+
     auto* impl = static_cast<Impl*>(impl_);
     b2Body* b = static_cast<b2Body*>(body);
-    
+
     b2FixtureDef def;
     def.density = density;
     def.friction = friction;
-    
+
     std::vector<b2Vec2> points(verts.size());
     for (size_t i = 0; i < verts.size(); ++i) {
         points[i].Set(verts[i].x, verts[i].y);
     }
-    
+
     b2PolygonShape shape;
     shape.Set(points.data(), (int)points.size());
     def.shape = &shape;
-    
+
     b->CreateFixture(&def);
     return nullptr;
 }
@@ -122,6 +176,54 @@ bool World::RayCast(b2Vec2 p1, b2Vec2 p2, RayCastResult& out, const b2Body* igno
 void World::step(float dt, int velocityIterations, int positionIterations) {
     auto* impl = static_cast<Impl*>(impl_);
     impl->world->Step(dt, velocityIterations, positionIterations);
+}
+
+Vector2 World::getBodyPosition(void* body) {
+    b2Body* b = static_cast<b2Body*>(body);
+    b2Vec2 p = b->GetPosition();
+    return Vector2{p.x, p.y};
+}
+
+Vector2 World::getBodyVelocity(void* body) {
+    b2Body* b = static_cast<b2Body*>(body);
+    b2Vec2 v = b->GetLinearVelocity();
+    return Vector2{v.x, v.y};
+}
+
+float World::getBodyMass(void* body) {
+    b2Body* b = static_cast<b2Body*>(body);
+    return b->GetMass();
+}
+
+void World::setBodyVelocity(void* body, float vx, float vy) {
+    b2Body* b = static_cast<b2Body*>(body);
+    b->SetLinearVelocity(b2Vec2(vx, vy));
+    b->SetAwake(true);
+}
+
+void World::applyLinearImpulse(void* body, float impulseX, float impulseY) {
+    b2Body* b = static_cast<b2Body*>(body);
+    b->ApplyLinearImpulse(b2Vec2(impulseX, impulseY), b->GetWorldCenter(), true);
+}
+
+void World::registerBody(void* body, BodyKind kind) {
+    if (!body) return;
+    static_cast<Impl*>(impl_)->bodyKinds[body] = kind;
+}
+
+World::BodyKind World::getBodyKind(void* body) {
+    auto* impl = static_cast<Impl*>(impl_);
+    auto it = impl->bodyKinds.find(body);
+    return it == impl->bodyKinds.end() ? BodyKind::Unknown : it->second;
+}
+
+void World::getContacts(void* key, std::vector<BodyContact>& out) {
+    auto* impl = static_cast<Impl*>(impl_);
+    auto it = impl->contacts.find(key);
+    if (it == impl->contacts.end()) return;
+    for (auto& kv : it->second) {
+        out.push_back(kv.second);
+    }
 }
 
 void setupCategories(World* world) {

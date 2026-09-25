@@ -31,6 +31,7 @@ void TerrainSystem::createFixture(Chunk* chunk) {
     // Create static body at chunk centroid (flip Y for Box2D Y-up convention)
     float bodyY = WORLD_H - chunk->centroidY / PPM;
     chunk->body = world->createBody(chunk->centroidX / PPM, bodyY, true, 0, 0, 0.75f, true);
+    world->registerBody(chunk->body, World::BodyKind::Terrain);
     
     // Create polygon fixture from vertices, local to the body origin (Box2D
     // fixture vertices are body-relative, not world coordinates) and with
@@ -125,6 +126,7 @@ void TerrainSystem::thawComponent(std::vector<Chunk*> component) {
     // Flip Y for Box2D Y-up convention
     float bodyY = WORLD_H - cy / PPM;
     void* body = world->createBody(cx / PPM, bodyY, false, 0.02f, 0.05f, REFREEZE_THRESHOLD);
+    world->registerBody(body, World::BodyKind::Terrain);
 
     for (int i = 0; i < cap; i++) {
         Chunk* c = component[i];

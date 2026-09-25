@@ -3,9 +3,9 @@
 #include <vector>
 
 class World;
-namespace Terrain { struct Chunk; }
+namespace Terrain { struct Chunk; class TerrainSystem; }
 using ChunkGrid = std::vector<std::vector<Terrain::Chunk*>>;
-namespace Entities { class Worm; }
+namespace Entities { class Worm; class Projectile; }
 
 namespace Weapons {
 
@@ -14,8 +14,12 @@ public:
     std::string name = "bazooka";
     float radius = 1.9f;
     float damage = 45.0f;
-    void fire(const Entities::Worm* worm, float angle, float power, World* world, 
-              const ChunkGrid& chunks, const std::vector<std::vector<Entities::Worm*>>& worms);
+    // Launch speed [px/s] scales with charge: a tap is a weak lob, a full
+    // charge a hard shot.
+    float minSpeed = 150.0f;
+    float maxSpeed = 520.0f;
+    Entities::Projectile fire(const Entities::Worm* worm, float angle, float power, World* world,
+              Terrain::TerrainSystem* terrain, float wind);
 };
 
 class Grenade {
@@ -24,8 +28,10 @@ public:
     float radius = 1.7f;
     float damage = 50.0f;
     int fuseTime = 3;
-    void fire(const Entities::Worm* worm, float angle, float power, World* world,
-              const ChunkGrid& chunks, const std::vector<std::vector<Entities::Worm*>>& worms);
+    float minSpeed = 120.0f;
+    float maxSpeed = 420.0f;
+    Entities::Projectile fire(const Entities::Worm* worm, float angle, float power, World* world,
+              Terrain::TerrainSystem* terrain, float wind);
 };
 
 } // namespace Weapons

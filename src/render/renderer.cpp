@@ -2,6 +2,7 @@
 #include "../game/camera.h"
 #include "../entities/worm.h"
 #include "../entities/explosion.h"
+#include "../entities/projectile.h"
 #include "../terrain/terrain.h"
 #include <raylib.h>
 #include <algorithm>
@@ -10,6 +11,7 @@
 void render(const GameCamera& camera, const ChunkGrid& chunks, 
             const std::vector<Entities::Worm*>& worms,
             const std::vector<Entities::Explosion>& explosions,
+            const std::vector<Entities::Projectile>& projectiles,
             int screenWidth, int screenHeight) {
     (void)screenWidth; (void)screenHeight;
 
@@ -88,21 +90,30 @@ void render(const GameCamera& camera, const ChunkGrid& chunks,
                       hpPercent > 0.5f ? GREEN : (hpPercent > 0.25f ? YELLOW : RED));
     }
 
+    // Draw projectiles in flight: a small dense shell, coloured by type.
+    for (const auto& p : projectiles) {
+        if (!p.isAlive()) continue;
+        Vector2 screenPos = camera.worldToScreen((Vector2){p.drawX, p.drawY});
+        Color c = (p.type == Entities::ProjectileType::Bazooka) ? GOLD : LIGHTGRAY;
+        DrawCircle(screenPos.x, screenPos.y, 4.0f, c);
+        DrawCircleLines(screenPos.x, screenPos.y, 4.0f, BLACK);
+    }
+
     // Draw explosions
     for (const auto& exp : explosions) {
         if (!exp.isAlive()) continue;
-        
+
         Vector2 screenPos = camera.worldToScreen((Vector2){exp.x, exp.y});
         float alpha = 1.0f - exp.age / exp.maxAge;
-        
-        // Draw explosion ring
+
+        // Draw explosion ring at the real blast radius.
         Color c = ORANGE;
         c.a = (unsigned char)(255 * alpha);
-        DrawCircleLines(screenPos.x, screenPos.y, exp.radius * 0.1f, c);
-        
-        // Draw inner glow
-        c.a = (unsigned char)(128 * alpha);
-        DrawCircle(screenPos.x, screenPos.y, exp.radius * 0.05f, c);
+        DrawCircleLines(screenPos.x, screenPos.y, exp.radius, c);
+
+        // Inner glow fills the blast area.
+        c.a = (unsigned char)(150 * alpha);
+        DrawCircle(screenPos.x, screenPos.y, exp.radius * 0.6f, c);
     }
 }
 
