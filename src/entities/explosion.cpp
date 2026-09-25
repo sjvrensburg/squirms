@@ -22,6 +22,7 @@ void createExplosion(World* world, float x, float y, float radius, float damage,
                      Terrain::TerrainSystem* terrain, const std::vector<std::vector<Entities::Worm*>>& worms) {
     // Damage chunks in radius. Bedrock is indestructible, so skip it outright
     // (its hp is negative, so a naive hp check would destroy it).
+    bool anyDestroyed = false;
     if (terrain) {
         for (auto& row : terrain->chunks) {
             for (auto* chunk : row) {
@@ -31,10 +32,18 @@ void createExplosion(World* world, float x, float y, float radius, float damage,
                 float dist = std::sqrt(dx * dx + dy * dy);
                 if (dist < radius) {
                     float falloff = 1.0f - dist / radius;
-                    terrain->damageChunk(chunk, damage * falloff);
+                    // damageChunk only reports a real removal (a SOLID chunk
+                    // whose hp dropped to zero), so this counts once per
+                    // destroyed chunk, not once per explosion.
+                    if (terrain->damageChunk(chunk, damage * falloff)) anyDestroyed = true;
                 }
             }
         }
+        // Once per explosion: recompute which chunks lost their support and
+        // thaw every now-floating component into a falling slab. Doing this
+        // here (rather than per destroyed chunk or every tick) means a blast
+        // that removes several chunks produces exactly one thaw pass.
+        if (anyDestroyed) terrain->recomputeSupportAndThaw();
     }
 
     // Damage worms in radius, with distance falloff and a knockaway from the

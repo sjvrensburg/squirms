@@ -221,6 +221,11 @@ float World::getBodyMass(void* body) {
     return b->GetMass();
 }
 
+float World::getBodyAngle(void* body) {
+    b2Body* b = static_cast<b2Body*>(body);
+    return b->GetAngle();
+}
+
 void World::setBodyVelocity(void* body, float vx, float vy) {
     b2Body* b = static_cast<b2Body*>(body);
     b->SetLinearVelocity(b2Vec2(vx, vy));

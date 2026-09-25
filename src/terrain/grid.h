@@ -49,6 +49,13 @@ struct Chunk {
     ChunkState state;
     void* body = nullptr;
     void* fixture = nullptr;
+    // For a thawed dynamic slab these are kept fresh so the renderer can draw
+    // the chunk where its Box2D body actually is (see renderer.cpp). The slab
+    // centroid `bodyOrigin` is set once when the slab is created; `bodyDraw`
+    // and `bodyAngle` are refreshed every tick from the body's state.
+    float bodyOriginX = 0, bodyOriginY = 0;
+    float bodyDrawX = 0, bodyDrawY = 0;
+    float bodyAngle = 0;
 };
 
 struct GridData {

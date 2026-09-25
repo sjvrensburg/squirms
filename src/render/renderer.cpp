@@ -36,12 +36,33 @@ void render(const GameCamera& camera, const ChunkGrid& chunks,
                 c = GOLD; // Dynamic chunks are highlighted
             }
             
-            // Draw chunk as filled polygon
+            // Draw chunk as filled polygon. Static chunks sit at their grid
+            // position; a thawed dynamic slab has moved and rotated under
+            // physics, so draw it where its Box2D body actually is.
             std::vector<Vector2> screenVerts;
-            for (auto& v : chunk->verts) {
-                Vector2 worldPos = {(float)v.first, (float)v.second};
-                Vector2 screen = camera.worldToScreen(worldPos);
-                screenVerts.push_back(screen);
+            if (chunk->state == Terrain::ChunkState::DYNAMIC && chunk->body) {
+                // Verts are stored in pixel space relative to the slab origin;
+                // rotate them about that origin, offset by the body's current
+                // pixel position, and un-flip Box2D's Y-up metres back to
+                // pixel space -- the same convention projectile.cpp uses.
+                float angle = chunk->bodyAngle;
+                float cxM = chunk->bodyDrawX / Terrain::PPM;
+                float cyM = (Terrain::WORLD_H - chunk->bodyDrawY) / Terrain::PPM;
+                for (auto& v : chunk->verts) {
+                    float lx = (v.first - chunk->bodyOriginX) / Terrain::PPM;
+                    float ly = -(v.second - chunk->bodyOriginY) / Terrain::PPM;
+                    float rx = lx * cosf(angle) - ly * sinf(angle);
+                    float ry = lx * sinf(angle) + ly * cosf(angle);
+                    float px = (cxM + rx) * Terrain::PPM;
+                    float py = Terrain::WORLD_H - (cyM + ry) * Terrain::PPM;
+                    screenVerts.push_back(camera.worldToScreen((Vector2){px, py}));
+                }
+            } else {
+                for (auto& v : chunk->verts) {
+                    Vector2 worldPos = {(float)v.first, (float)v.second};
+                    Vector2 screen = camera.worldToScreen(worldPos);
+                    screenVerts.push_back(screen);
+                }
             }
             
             if (screenVerts.size() >= 3) {

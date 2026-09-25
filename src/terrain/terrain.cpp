@@ -107,12 +107,26 @@ void TerrainSystem::recomputeSupportAndThaw() {
 }
 
 void TerrainSystem::thawComponent(std::vector<Chunk*> component) {
-    int cap = std::min((int)component.size(), SLAB_CHUNK_CAP);
-    if (cap == 0) return;
+    // A floating component may be larger than SLAB_CHUNK_CAP. Split it into
+    // successive slabs of at most that many chunks so every chunk falls
+    // instead of the tail being silently left hanging as static.
+    for (size_t start = 0; start < component.size(); start += SLAB_CHUNK_CAP) {
+        size_t end = std::min(start + SLAB_CHUNK_CAP, component.size());
+        thawSlab(std::vector<Chunk*>(component.begin() + start, component.begin() + end));
+    }
+}
+
+// Turn one slab (<= SLAB_CHUNK_CAP solid chunks) into a single dynamic body.
+// The body origin is the mass-weighted centroid of the slab; every chunk in it
+// shares that origin so they fall and rotate as a unit.
+void TerrainSystem::thawSlab(std::vector<Chunk*> slab) {
+    if (slab.empty()) return;
 
     float totalMass = 0, cx = 0, cy = 0;
-    for (int i = 0; i < cap; i++) {
-        Chunk* c = component[i];
+    for (auto* c : slab) {
+        // Bedrock is indestructible and always grounded, so it can never be a
+        // floating chunk -- but guard here too so it is never thawed.
+        if (c->material == Material::Bedrock) continue;
         const auto& props = getMaterialProps(c->material);
         float area = computeQuadArea(c->verts);
         float mass = props.density * area / ((float)PPM * PPM);
@@ -128,8 +142,8 @@ void TerrainSystem::thawComponent(std::vector<Chunk*> component) {
     void* body = world->createBody(cx / PPM, bodyY, false, 0.02f, 0.05f, REFREEZE_THRESHOLD);
     world->registerBody(body, World::BodyKind::Terrain);
 
-    for (int i = 0; i < cap; i++) {
-        Chunk* c = component[i];
+    for (auto* c : slab) {
+        if (c->material == Material::Bedrock) continue;
         if (c->body) {
             world->destroyBody(c->body);
             c->body = nullptr;
@@ -146,12 +160,36 @@ void TerrainSystem::thawComponent(std::vector<Chunk*> component) {
         world->createPolygonFixture(body, verts, props.density, props.friction);
         c->body = body;
         c->state = ChunkState::DYNAMIC;
+        // Record the slab origin (pixel space) and initial body position so the
+        // renderer can draw the chunk where its Box2D body actually is.
+        c->bodyOriginX = cx; c->bodyOriginY = cy;
+        c->bodyDrawX = cx; c->bodyDrawY = cy;
+        c->bodyAngle = 0;
     }
 
     dynamicBodies.insert(body);
 }
 
+// Refresh each dynamic chunk's render position/angle from its Box2D body so the
+// renderer can draw falling slabs where the physics actually puts them.
+void TerrainSystem::syncDynamicChunkPositions() {
+    for (int row = 0; row < ROWS; row++) {
+        for (int col = 0; col < COLS; col++) {
+            Chunk* c = chunks[row][col];
+            if (c->state != ChunkState::DYNAMIC || !c->body) continue;
+            Vector2 bp = world->getBodyPosition(c->body);
+            // Un-flip Box2D's Y-up metres back to pixel space, matching
+            // Worm::getPosition() / projectile.cpp.
+            c->bodyDrawX = bp.x * PPM;
+            c->bodyDrawY = WORLD_H - bp.y * PPM;
+            c->bodyAngle = world->getBodyAngle(c->body);
+        }
+    }
+}
+
 void TerrainSystem::update(float dt) {
+    // Keep falling slabs' render positions in step with the physics body.
+    syncDynamicChunkPositions();
     refreezeTimer += dt;
     if (refreezeTimer >= REFREEZE_THRESHOLD) {
         refreezeTimer = 0;

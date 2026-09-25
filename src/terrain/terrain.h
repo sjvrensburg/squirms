@@ -34,6 +34,8 @@ private:
     void destroyChunk(Chunk* chunk);
     void exposeNeighbors(const Chunk* chunk);
     void thawComponent(std::vector<Chunk*> component);
+    void thawSlab(std::vector<Chunk*> slab);
+    void syncDynamicChunkPositions();
     void tryRefreeze();
     void freezeBody(void* body);
     std::vector<Chunk*> getChunksForBody(void* body) const;

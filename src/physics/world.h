@@ -53,6 +53,7 @@ public:
     Vector2 getBodyPosition(void* body);
     Vector2 getBodyVelocity(void* body);
     float getBodyMass(void* body);
+    float getBodyAngle(void* body);
     void setBodyVelocity(void* body, float vx, float vy);
     void applyLinearImpulse(void* body, float impulseX, float impulseY);
 
