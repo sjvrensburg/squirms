@@ -1,4 +1,5 @@
 #include "hud.h"
+#include "../net/input.h"
 #include "sprites.h"
 #include "text.h"
 #include "../game/game.h"
@@ -181,7 +182,7 @@ void drawWeaponPanel(const Game& g) {
     panel(p, withAlpha(team.color, 0.9f), 0.08f);
     Text::drawOutlined("WEAPONS", {p.x + 14, p.y + 12}, 20, WHITE, INK, 1.5f);
     bool canPick = g.phase == Phase::Aiming && !g.fired;
-    int hover = weaponPanelHit(GetMousePosition());
+    int hover = weaponPanelHit(Input::mousePosition());
     for (int i = 0; i < WEAPON_COUNT; i++) {
         Rectangle c = cellRect(i);
         int ammo = team.ammo[i];

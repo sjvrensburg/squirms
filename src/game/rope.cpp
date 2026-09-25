@@ -1,3 +1,4 @@
+#include "../net/input.h"
 // The ninja rope: shoot it along the aim, swing with Left/Right, climb with
 // Up/Down, let go with Space (or Enter), and shoot it again mid-air. Using
 // the rope doesn't end the turn.
@@ -68,15 +69,15 @@ void Game::attachRope(Vector2 at, void* body) {
 void Game::ropeControls(float dt) {
     if (rope.state != NinjaRope::State::Attached || !current) return;
     int dir = 0;
-    if (IsKeyDown(KEY_LEFT) || IsKeyDown(KEY_A)) dir -= 1;
-    if (IsKeyDown(KEY_RIGHT) || IsKeyDown(KEY_D)) dir += 1;
+    if (Input::keyDown(KEY_LEFT) || Input::keyDown(KEY_A)) dir -= 1;
+    if (Input::keyDown(KEY_RIGHT) || Input::keyDown(KEY_D)) dir += 1;
     if (dir) {
         world->applyForce(current->body, dir * SWING_FORCE, 0);
         current->facing = dir;
     }
     float climb = 0;
-    if (IsKeyDown(KEY_UP) || IsKeyDown(KEY_W)) climb -= CLIMB_SPEED * dt;
-    if (IsKeyDown(KEY_DOWN) || IsKeyDown(KEY_S)) climb += CLIMB_SPEED * dt;
+    if (Input::keyDown(KEY_UP) || Input::keyDown(KEY_W)) climb -= CLIMB_SPEED * dt;
+    if (Input::keyDown(KEY_DOWN) || Input::keyDown(KEY_S)) climb += CLIMB_SPEED * dt;
     if (climb != 0) {
         rope.freeLen = std::clamp(rope.freeLen + climb, ROPE_MIN, ROPE_MAX);
         world->setRopeLength(rope.joint, rope.freeLen / Terrain::PPM);

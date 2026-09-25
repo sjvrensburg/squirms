@@ -1,3 +1,4 @@
+#include "../net/input.h"
 #include "game.h"
 #include "../physics/world.h"
 #include "../terrain/generate.h"
@@ -397,21 +398,22 @@ void Game::selectWeapon(WeaponId id) {
 // fast displays and double them on slow ones (e.g. one Space both releasing
 // and detonating the sheep, one Tab opening and closing the panel).
 void Game::frameInput() {
-    if (IsKeyPressed(KEY_F1)) debug = !debug;
-    if (IsKeyPressed(KEY_H)) helpOpen = !helpOpen;
+    if (!Input::available()) { dragging = false; return; }
+    if (Input::keyPressed(KEY_F1)) debug = !debug;
+    if (Input::keyPressed(KEY_H)) helpOpen = !helpOpen;
 
     if (phase == Phase::GameOver) {
-        if (phaseTime > 1.5f && (IsKeyPressed(KEY_ENTER) || IsKeyPressed(KEY_SPACE) ||
-                                 IsMouseButtonPressed(MOUSE_BUTTON_LEFT)))
+        if (phaseTime > 1.5f && (Input::keyPressed(KEY_ENTER) || Input::keyPressed(KEY_SPACE) ||
+                                 Input::mousePressed(MOUSE_BUTTON_LEFT)))
             exitRequested = true;
     }
 
     if (confirmQuit) {
-        if (IsKeyPressed(KEY_Y) || IsKeyPressed(KEY_ENTER)) exitRequested = true;
-        if (IsKeyPressed(KEY_N) || IsKeyPressed(KEY_ESCAPE)) confirmQuit = false;
+        if (Input::keyPressed(KEY_Y) || Input::keyPressed(KEY_ENTER)) exitRequested = true;
+        if (Input::keyPressed(KEY_N) || Input::keyPressed(KEY_ESCAPE)) confirmQuit = false;
         return;
     }
-    if (IsKeyPressed(KEY_ESCAPE)) {
+    if (Input::keyPressed(KEY_ESCAPE)) {
         if (panelOpen) panelOpen = false;
         else if (helpOpen) helpOpen = false;
         else if (phase != Phase::GameOver) confirmQuit = true;
@@ -419,12 +421,12 @@ void Game::frameInput() {
     }
 
     // Camera: wheel zoom, drag to look around.
-    float wheel = GetMouseWheelMove();
+    float wheel = Input::mouseWheel();
     if (wheel != 0) camera.zoomBy(wheel > 0 ? 1.12f : 1.0f / 1.12f);
-    Vector2 mouse = GetMousePosition();
+    Vector2 mouse = Input::mousePosition();
     mouseWorld = camera.screenToWorld(mouse);
-    bool leftDown = IsMouseButtonDown(MOUSE_BUTTON_LEFT) || IsMouseButtonDown(MOUSE_BUTTON_MIDDLE);
-    if (IsMouseButtonPressed(MOUSE_BUTTON_LEFT) || IsMouseButtonPressed(MOUSE_BUTTON_MIDDLE)) {
+    bool leftDown = Input::mouseDown(MOUSE_BUTTON_LEFT) || Input::mouseDown(MOUSE_BUTTON_MIDDLE);
+    if (Input::mousePressed(MOUSE_BUTTON_LEFT) || Input::mousePressed(MOUSE_BUTTON_MIDDLE)) {
         dragging = !panelOpen;
         dragDist = 0;
         lastMouse = mouse;  // measure the drag from where the button went down
@@ -454,13 +456,13 @@ void Game::frameInput() {
     Team& team = teams[currentTeam];
 
     // Weapon panel.
-    if ((IsKeyPressed(KEY_TAB) || IsMouseButtonPressed(MOUSE_BUTTON_RIGHT)) && phase != Phase::GameOver) {
+    if ((Input::keyPressed(KEY_TAB) || Input::mousePressed(MOUSE_BUTTON_RIGHT)) && phase != Phase::GameOver) {
         panelOpen = !panelOpen;
         if (panelOpen) Audio::playSound("menu");
     }
     if (panelOpen) {
         int hover = weaponPanelHit(mouse);
-        if (IsMouseButtonPressed(MOUSE_BUTTON_LEFT) && hover >= 0) {
+        if (Input::mousePressed(MOUSE_BUTTON_LEFT) && hover >= 0) {
             if (phase == Phase::Aiming && !fired) selectWeapon((WeaponId)hover);
             else panelOpen = false;
         }
@@ -473,7 +475,7 @@ void Game::frameInput() {
     for (auto& p : projectiles) if (p.alive && p.type == ProjectileType::Sheep) sheepOut = true;
     if (sheepOut) {
         // Remote detonation.
-        if (IsKeyPressed(KEY_SPACE)) {
+        if (Input::keyPressed(KEY_SPACE)) {
             for (auto& p : projectiles) if (p.type == ProjectileType::Sheep) p.detonateNow = true;
         }
         return;
@@ -482,20 +484,20 @@ void Game::frameInput() {
     bool roped = rope.state == NinjaRope::State::Attached;
     if (roped) {
         // Let go: Enter always, Space when the rope is what's in hand.
-        if (IsKeyPressed(KEY_ENTER) || (IsKeyPressed(KEY_SPACE) && weapon == WeaponId::NinjaRope)) {
+        if (Input::keyPressed(KEY_ENTER) || (Input::keyPressed(KEY_SPACE) && weapon == WeaponId::NinjaRope)) {
             releaseRope();
             return;
         }
     } else if (!charging) {
-        if (IsKeyPressed(KEY_ENTER)) { current->jump(); camera.manual = false; }
-        if (IsKeyPressed(KEY_BACKSPACE)) { current->backflip(); camera.manual = false; }
+        if (Input::keyPressed(KEY_ENTER)) { current->jump(); camera.manual = false; }
+        if (Input::keyPressed(KEY_BACKSPACE)) { current->backflip(); camera.manual = false; }
     }
 
     if (phase != Phase::Aiming || shotsLeft <= 0) return;
     const WeaponInfo& info = weaponInfo(weapon);
     if (info.fused) {
         for (int k = 1; k <= 5; k++) {
-            if (IsKeyPressed(KEY_ZERO + k)) {
+            if (Input::keyPressed(KEY_ZERO + k)) {
                 fuse = k;
                 say(TextFormat("Fuse: %d sec", k), WHITE, 1.0f);
                 Audio::playSound("select", 0.6f, 0.8f + k * 0.1f);
@@ -506,10 +508,10 @@ void Game::frameInput() {
 
     switch (info.mode) {
         case FireMode::Rope:
-            if (IsKeyPressed(KEY_SPACE) && rope.state == NinjaRope::State::Idle) shootRope();
+            if (Input::keyPressed(KEY_SPACE) && rope.state == NinjaRope::State::Idle) shootRope();
             break;
         case FireMode::Charged:
-            if (IsKeyPressed(KEY_SPACE) && !charging && (current->grounded || roped)) {
+            if (Input::keyPressed(KEY_SPACE) && !charging && (current->grounded || roped)) {
                 charging = true;
                 power = 0;
                 Audio::playSound("charge", 0.6f);
@@ -518,7 +520,7 @@ void Game::frameInput() {
         case FireMode::Instant:
         case FireMode::Drop:
         case FireMode::Skip:
-            if (IsKeyPressed(KEY_SPACE)) fire();
+            if (Input::keyPressed(KEY_SPACE)) fire();
             break;
         case FireMode::Targeted:
             if (clicked) fireAt(mouseWorld);
@@ -529,6 +531,7 @@ void Game::frameInput() {
 // Held input (walking, aiming, winding up a shot), applied every tick.
 void Game::tickInput(float dt) {
     if (cpuTurn()) { updateCpu(dt); return; }
+    if (!Input::available()) { charging = false; power = 0; return; }
     if (confirmQuit || panelOpen) return;
     bool myTurn = (phase == Phase::Aiming || phase == Phase::Retreat) && current && current->canAct();
     if (!myTurn) { charging = false; return; }
@@ -539,8 +542,8 @@ void Game::tickInput(float dt) {
         ropeControls(dt);
     } else if (!charging) {
         int dir = 0;
-        if (IsKeyDown(KEY_LEFT) || IsKeyDown(KEY_A)) dir -= 1;
-        if (IsKeyDown(KEY_RIGHT) || IsKeyDown(KEY_D)) dir += 1;
+        if (Input::keyDown(KEY_LEFT) || Input::keyDown(KEY_A)) dir -= 1;
+        if (Input::keyDown(KEY_RIGHT) || Input::keyDown(KEY_D)) dir += 1;
         if (dir != 0) {
             current->walk(dir, dt);
             camera.manual = false;
@@ -550,13 +553,13 @@ void Game::tickInput(float dt) {
     if (phase != Phase::Aiming || shotsLeft <= 0) { charging = false; return; }
     const WeaponInfo& info = weaponInfo(weapon);
     if (info.aims && !roped) {
-        if (IsKeyDown(KEY_UP) || IsKeyDown(KEY_W)) current->aim += AIM_SPEED * dt;
-        if (IsKeyDown(KEY_DOWN) || IsKeyDown(KEY_S)) current->aim -= AIM_SPEED * dt;
+        if (Input::keyDown(KEY_UP) || Input::keyDown(KEY_W)) current->aim += AIM_SPEED * dt;
+        if (Input::keyDown(KEY_DOWN) || Input::keyDown(KEY_S)) current->aim -= AIM_SPEED * dt;
         current->aim = std::clamp(current->aim, -1.5f, 1.5f);
     }
     if (charging) {
         power = std::min(1.0f, power + dt / CHARGE_SECONDS);
-        if (!IsKeyDown(KEY_SPACE) || power >= 1.0f) {
+        if (!Input::keyDown(KEY_SPACE) || power >= 1.0f) {
             fire();
             charging = false;
         }

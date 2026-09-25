@@ -6,6 +6,9 @@
 // then gets a small pool of Sound aliases so overlapping plays work.
 #include <raylib.h>
 #include "sfx.h"
+#ifdef __EMSCRIPTEN__
+#include <emscripten.h>
+#endif
 
 #include <chrono>
 #include <cmath>
@@ -632,6 +635,31 @@ Buf sLand() {
 }
 
 // ---------------------------------------------------------------------------
+// Soft, overlapping chords and a filtered wind bed. These use the same
+// synthesis/playback path as effects, including the remote audio event stream.
+Buf sPad() {
+    Buf b = make(5.2f);
+    Osc root, fifth, octave;
+    for (size_t i = 0; i < b.size(); ++i) {
+        float t = static_cast<float>(i) / SR;
+        float env = std::pow(std::sin(PI * t / 5.2f), 2.0f);
+        b[i] = env * (root.sine(130.81f) + 0.35f * fifth.sine(196.0f) +
+                      0.18f * octave.sine(261.9f));
+    }
+    return b;
+}
+Buf sWind() {
+    Buf b = make(4.0f);
+    Rng r(0xABC);
+    SVF low;
+    for (size_t i = 0; i < b.size(); ++i) {
+        float t = static_cast<float>(i) / SR;
+        float env = std::pow(std::sin(PI * t / 4.0f), 2.0f);
+        b[i] = low.lp(r.bi(), 280.0f + 100.0f * std::sin(t * 1.4f)) * env;
+    }
+    return b;
+}
+
 // Registry / playback
 // ---------------------------------------------------------------------------
 struct Def {
@@ -655,19 +683,23 @@ const Def DEFS[] = {
     {"bat", sBat, 0.8f},              {"drown", sDrown, 0.7f},
     {"beep", sBeep, 0.4f},            {"airstrike", sAirstrike, 0.75f},
     {"land", sLand, 0.65f},
+    {"pad", sPad, 0.25f}, {"wind", sWind, 0.18f},
 };
 constexpr int NUM_DEFS = static_cast<int>(sizeof(DEFS) / sizeof(DEFS[0]));
 constexpr int VOICES = 4;
 
 struct Effect {
     Sound voices[VOICES];
+    float volumes[VOICES]{};
     int count = 0;
     int next = 0;
 };
 
 Effect g_effects[NUM_DEFS];
 bool g_ready = false;
-float g_master = 1.0f;
+float g_master = 0.8f;
+float g_sfx = 1.0f, g_music = 0.35f;
+bool g_remote = false;
 
 // DC block, click-free fades, peak-normalize, and convert to a 16-bit Wave.
 Sound bake(Buf& b, float peak) {
@@ -757,10 +789,52 @@ void playSound(const char* name, float volume, float pitch) {
         }
         e.next = (pick + 1) % e.count;
         const Sound& s = e.voices[pick];
-        SetSoundVolume(s, clamp01(volume));
+#ifdef __EMSCRIPTEN__
+        if (!g_remote) EM_ASM({
+            if (window.SquirmsOnline) window.SquirmsOnline.sound($0, $1, $2);
+        }, d, volume, pitch);
+#endif
+        bool musical = std::strcmp(name, "pad") == 0 || std::strcmp(name, "wind") == 0;
+        e.volumes[pick] = clamp01(volume);
+        SetSoundVolume(s, e.volumes[pick] * (musical ? g_music : g_sfx));
         SetSoundPitch(s, pitch > 0.01f ? pitch : 1.0f);
         PlaySound(s);
         return;
+    }
+}
+
+void playRemote(int id, float volume, float pitch) {
+    if (id < 0 || id >= NUM_DEFS || !std::isfinite(volume) || !std::isfinite(pitch)) return;
+    g_remote = true;
+    playSound(DEFS[id].name, volume, std::fmax(0.25f, std::fmin(pitch, 4.0f)));
+    g_remote = false;
+}
+
+void setMix(float effects, float music) {
+    g_sfx = clamp01(effects);
+    g_music = clamp01(music);
+    // Apply slider changes to notes/effects already ringing out, too.
+    for (int d = 0; d < NUM_DEFS; ++d) {
+        bool musical = std::strcmp(DEFS[d].name, "pad") == 0 || std::strcmp(DEFS[d].name, "wind") == 0;
+        for (int v = 0; v < g_effects[d].count; ++v)
+            SetSoundVolume(g_effects[d].voices[v], g_effects[d].volumes[v] * (musical ? g_music : g_sfx));
+    }
+}
+
+void update(float dt, bool inMatch, float wind, int theme) {
+    static float chordAt = 0, windAt = 0;
+    static unsigned chord = 0;
+    chordAt -= dt;
+    windAt -= dt;
+    if (chordAt <= 0) {
+        const float notes[] = {0, -3, -5, -3};
+        float transpose = theme == 3 ? -5.0f : (theme == 2 ? 7.0f : 0.0f);
+        playSound("pad", inMatch ? 0.55f : 0.8f, semis(notes[chord++ % 4] + transpose));
+        chordAt = 3.2f;
+    }
+    if (windAt <= 0) {
+        playSound("wind", inMatch ? 0.25f + std::fabs(wind) * 0.45f : 0.18f, theme == 3 ? 0.65f : 1.0f);
+        windAt = 2.6f;
     }
 }
 

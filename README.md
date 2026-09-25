@@ -9,13 +9,52 @@ Requires the Emscripten SDK installed locally at `emsdk/` (not tracked in git �
 ```bash
 source emsdk/emsdk_env.sh
 emcmake cmake -B build
-cmake --build build
-cp build/squirms_wasm.js build/squirms_wasm.wasm dist/
-cp index.html dist/
-PATH=$PATH:$(pwd)/emsdk/upstream/emscripten emrun dist/index.html
+cmake --build build --target stage
+node server/server.mjs  # Node 22+, then open http://localhost:8080
 ```
 
-The game is entirely self-contained C++. `index.html` is just a `<canvas id="canvas">` plus the Emscripten-generated glue script; raylib/GLFW3 own the canvas, input, audio and rendering directly, and the whole game loop runs in WASM. There are no image or sound files: every sprite is drawn procedurally and every sound effect is synthesized at startup. The only asset is the Montserrat font (`assets/fonts`, SIL OFL), which is embedded into the build.
+Gameplay, physics, procedural graphics and synthesized audio run in C++/WASM. The browser shell (`web/`) adds online pairing, video transport, sound preferences and fullscreen controls. There are no image or sound files; the Montserrat font (`assets/fonts`, SIL OFL) is embedded into the build. `stage` assembles the complete playable bundle in `dist/`. Static hosting still supports computer and hot-seat matches; online rooms need the included server.
+
+## Online multiplayer
+
+1. Both players open the same running Squirms server in a desktop browser.
+2. The host chooses the map, worms and energy in the menu, then selects **Play online → Create a room**.
+3. Send the invite link to a friend. They open it and select **Join**. The match starts automatically with two human teams: host is team 1, guest is team 2. The seed determines which team goes first.
+4. Use the normal keyboard/mouse controls on your turn. **Play online → Leave online session** returns to the menu. Create a new room for a rematch.
+
+Online mode is **host-authoritative remote play**: the host runs the entire simulation and streams the canvas at up to 30 FPS over WebRTC. The guest sends input over an ordered data channel and synthesizes received sound events locally. Both players see the same camera, terrain and explosions; physics cannot drift apart. Guest video quality and control latency depend on the connection and host machine. Keep the host tab visible. A lost heartbeat pauses the simulation; a closed connection requires a new room. There is no reconnect-to-match, host migration, spectator mode or matchmaking. Debug terrain editing is disabled online.
+
+Sound settings provide separate effects and music/ambience sliders, plus mute, saved per browser. No microphone or camera access is requested.
+
+### Hosting for friends
+
+The server binds to localhost by default. For a LAN, use `HOST=0.0.0.0 PORT=8080 node server/server.mjs` and share your machine's LAN address. For Internet play, place the server behind an HTTPS reverse proxy that preserves the Host header. Both players must reach that public URL; localhost links only work on the same machine. Serve the page and `/api/` from the same origin.
+
+The default ICE configuration uses Google's public STUN server. Some networks require TURN. Supply a JSON array of WebRTC ICE servers when starting the server, for example:
+
+```bash
+ICE_SERVERS='[{"urls":"stun:stun.example.com:3478"},{"urls":"turns:turn.example.com:5349","username":"temporary-user","credential":"temporary-password"}]' HOST=0.0.0.0 node server/server.mjs
+```
+
+ICE settings are sent to browsers, so use short-lived TURN credentials from your relay provider. The signaling service stores room offers/answers in memory for ten minutes, permits one guest per room, limits room creation and message size, and uses separate host-management secrets. Restarting it clears waiting rooms; established peer connections continue. Room links are bearer invitations: anyone with the link can take the guest slot. This small server is intended for private friend matches; it does not include user accounts or a public lobby.
+
+The browser APIs used are [canvas captureStream](https://developer.mozilla.org/en-US/docs/Web/API/HTMLCanvasElement/captureStream) and [RTCPeerConnection.addTrack](https://developer.mozilla.org/en-US/docs/Web/API/RTCPeerConnection/addTrack). Game exports use [EMSCRIPTEN_KEEPALIVE](https://emscripten.org/docs/api_reference/emscripten.h.html#c.EMSCRIPTEN_KEEPALIVE).
+
+## Verification
+
+```bash
+cmake --build build --target stage
+node --test tests/server.test.mjs
+# Boundary tests run natively against minimal raylib stubs:
+g++ -std=c++17 -Wall -Wextra -Isrc -Ivendor/raylib/include tests/input_test.cpp src/net/input.cpp -o /tmp/squirms-input-test
+/tmp/squirms-input-test
+# Requires google-chrome on PATH (or set CHROME); launches two isolated browsers:
+node --test tests/browser.test.mjs
+# Optional visible-browser pass (requires a desktop session):
+HEADFUL=1 node --test --test-name-pattern='local weapons' tests/browser.test.mjs
+```
+
+The browser test uses actual WASM, direct local WebRTC, different window sizes, turn ownership, weapon selection/firing, remote sound events and disconnect cleanup. It writes screenshots to the system temporary directory. Check timing and audio in foreground browser tabs as well; headless rendering does not reproduce real display pacing.
 
 ## Setting up a match
 
@@ -133,7 +172,11 @@ src/
   render/hud.*             Timer, team bars, wind, weapon panel, overlays
   render/text.*            Font loading and outlined text
   render/theme.*           Landscape themes
-  audio/sfx.*              Procedurally synthesized sound effects
+  audio/sfx.*              Synthesized effects, ambient score, wind and audio mix
+  net/input.*              Host-side input ownership and remote input validation
+web/                       Browser shell, preferences and WebRTC transport
+server/server.mjs          Static hosting and short-lived room signaling (Node)
+tests/                     Server, input-boundary and two-browser integration checks
 assets/fonts/              Montserrat (SIL OFL), embedded into the WASM build
 vendor/                    Prebuilt raylib + Box2D 2.4 static libs (WASM)
 ```

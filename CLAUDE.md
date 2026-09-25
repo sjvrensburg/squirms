@@ -4,9 +4,9 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 ## Project overview
 
-Squirms is a Worms 2-style artillery game with destructible, collapsing physics terrain, written entirely in **C++** (raylib for rendering/input/audio, Box2D 2.4 for physics) and compiled to **WebAssembly** via Emscripten. It runs as a self-contained WASM module — raylib/GLFW3 own the canvas and drive the whole game loop directly; `index.html` is just a `<canvas id="canvas">` plus a one-line `Module.canvas = ...` bootstrap snippet and the Emscripten-generated glue script (`squirms_wasm.js`). There is no JS/TS game logic anywhere in the project (the only JS is two `EM_ASM` one-liners in `main.cpp` reading `window.innerWidth/innerHeight` so the canvas tracks the page size).
+Squirms is a Worms 2-style artillery game with destructible, collapsing physics terrain, written entirely in **C++** (raylib for rendering/input/audio, Box2D 2.4 for physics) and compiled to **WebAssembly** via Emscripten. It runs as a self-contained WASM module — raylib/GLFW3 own the canvas and drive the whole game loop directly; `index.html` and `web/` provide the browser shell, sound preferences and WebRTC remote play. Gameplay/physics remain in C++; the host streams its canvas to the guest and validates received input in `src/net/input.*`. Online rooms use `node server/server.mjs` (see README).
 
-There are no image or sound assets: sprites are drawn procedurally (`render/sprites.cpp`) and every sound is synthesized at startup (`audio/sfx.cpp`). The one asset is the Montserrat font in `assets/fonts/` (SIL OFL), baked into the build with `--embed-file` (see `CMakeLists.txt`), so `dist/` stays just `index.html` + js + wasm.
+There are no image or sound assets: sprites are drawn procedurally (`render/sprites.cpp`) and every sound is synthesized at startup (`audio/sfx.cpp`). The one asset is the Montserrat font in `assets/fonts/` (SIL OFL), baked into the build with `--embed-file` (see `CMakeLists.txt`), and the `stage` build target also copies the browser shell into `dist/web/`.
 
 ## Commands
 
@@ -14,11 +14,11 @@ There are no image or sound assets: sprites are drawn procedurally (`render/spri
 source emsdk/emsdk_env.sh          # activate the local Emscripten SDK (once per shell; not tracked in git)
 emcmake cmake -B build              # configure (re-run if CMakeLists.txt changes)
 cmake --build build                 # compile -> build/squirms_wasm.{js,wasm}
-cp build/squirms_wasm.js build/squirms_wasm.wasm dist/ && cp index.html dist/
+cmake --build build --target stage
 PATH=$PATH:$(pwd)/emsdk/upstream/emscripten emrun dist/index.html   # serve + open in a browser
 ```
 
-There is no test suite. Verify changes by building cleanly and exercising the game in a browser: a real foregrounded tab, or scripted headless Chrome (see "Headless browser testing" below).
+Run the server, input-boundary and two-browser integration tests documented in README. Also verify changes in foreground browser tabs (see "Headless browser testing" below).
 
 `emcmake cmake -B build` must also be re-run after **adding a new `.cpp` file**: sources are collected with `file(GLOB_RECURSE ...)`, so a plain `cmake --build` won't see it (you'll get an undefined-symbol link error).
 
