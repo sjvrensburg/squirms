@@ -172,26 +172,30 @@ void update(float dt) {
         state->camera.setFollow(currentWorm);
     }
     
-    // Handle input
-    if (Input::isKey("w") || Input::isKey("arrowup")) {
-        if (state->ninjaRope) state->ninjaRope->retract(50.0f * dt);
-    }
-    if (Input::isKey("s") || Input::isKey("arrowdown")) {
-        if (state->ninjaRope) state->ninjaRope->extend(50.0f * dt);
-    }
-    
-    if (currentWorm) {
-        if (Input::isKey("a") || Input::isKey("arrowleft")) {
-            currentWorm->walk(-1, dt);
+    // Handle input. Movement is only accepted while it's the current worm's
+    // turn (AIMING or the post-fire RETREAT window); while the world settles
+    // or the match is over, movement and firing input is ignored.
+    if (state->turn.canMove()) {
+        if (Input::isKey("w") || Input::isKey("arrowup")) {
+            if (state->ninjaRope) state->ninjaRope->retract(50.0f * dt);
         }
-        if (Input::isKey("d") || Input::isKey("arrowright")) {
-            currentWorm->walk(1, dt);
+        if (Input::isKey("s") || Input::isKey("arrowdown")) {
+            if (state->ninjaRope) state->ninjaRope->extend(50.0f * dt);
         }
-        if (Input::isKey(" ") || Input::isKey("enter")) {
-            currentWorm->jump();
-        }
-        if (Input::isKey("backspace")) {
-            currentWorm->backflip();
+
+        if (currentWorm) {
+            if (Input::isKey("a") || Input::isKey("arrowleft")) {
+                currentWorm->walk(-1, dt);
+            }
+            if (Input::isKey("d") || Input::isKey("arrowright")) {
+                currentWorm->walk(1, dt);
+            }
+            if (Input::isKey(" ") || Input::isKey("enter")) {
+                currentWorm->jump();
+            }
+            if (Input::isKey("backspace")) {
+                currentWorm->backflip();
+            }
         }
     }
     
@@ -219,7 +223,13 @@ void update(float dt) {
         }
     }
     if (state->charging && !Input::isKey("q")) {
-        fireWeapon();
+        // One shot per turn: only fire during AIMING and before the current
+        // worm has already fired. noteFired() ends the firing window for this
+        // turn (the worm may still move during the retreat window).
+        if (state->turn.canFire()) {
+            fireWeapon();
+            state->turn.noteFired();
+        }
         state->charging = false;
     }
     
@@ -271,24 +281,23 @@ void update(float dt) {
             [](const Entities::Explosion& e) { return !e.isAlive(); }),
         state->explosions.end());
     
-    // Update turn system
-    state->turn.update(dt);
-    
-    // Check game over
-    int aliveCount = 0;
-    int aliveTeam = -1;
-    for (auto& team : state->worms) {
-        for (auto* worm : team) {
-            if (worm->isAlive()) {
-                aliveCount++;
-                aliveTeam = worm->getTeamIndex();
-            }
-        }
-    }
-    if (aliveCount <= 1 && aliveCount > 0) {
+    // Check game over before advancing the turn: if at most one team now has a
+    // living worm the match ends (a draw if none are left). Done first so a
+    // finished match never advances to the next turn.
+    int winningTeam = -1;
+    if (state->turn.evaluateResult(&winningTeam) != MatchResult::IN_PROGRESS) {
         state->turn.state = TurnState::GAME_OVER;
     }
-    
+
+    // Is the world quiet enough to hand off to the next team? No shells in
+    // flight, no active explosions, and no terrain slabs still falling.
+    bool worldSettled = state->projectiles.empty()
+                        && state->explosions.empty()
+                        && state->terrain->getDynamicCount() == 0;
+
+    // Update turn system
+    state->turn.update(dt, worldSettled);
+
     // Update camera
     state->camera.update(dt);
     
@@ -309,9 +318,9 @@ void fireWeapon() {
     Vector2 mouseWorld = state->camera.screenToWorld((Vector2){(float)Input::getMouseScreenX(), (float)Input::getMouseScreenY()});
     float angle = atan2f(mouseWorld.y - pos.y * Terrain::PPM, mouseWorld.x - pos.x * Terrain::PPM);
 
-    // Snapshot the current wind once so the shell is pushed by a steady value
-    // across its whole flight (turn's getWind() otherwise returns a fresh
-    // random each call).
+    // The turn rolls its wind once at the start of the turn and holds it, so
+    // this snapshot is steady across the shell's whole flight and matches what
+    // the HUD shows for the rest of the turn.
     float wind = state->turn.getWind();
     
     if (state->weapon == "bazooka") {
@@ -325,6 +334,39 @@ void fireWeapon() {
     }
     
     Audio::playSound("fire");
+}
+
+// Draw the match-result overlay shown while the simulation keeps running after
+// the game ends: names the winning team in its colour, or says it's a draw.
+static void drawGameResult() {
+    int winner = -1;
+    if (state->turn.evaluateResult(&winner) != MatchResult::IN_PROGRESS) {
+        const char* text;
+        Color col = WHITE;
+        if (winner < 0) {
+            // No worms left anywhere: it's a draw.
+            text = "It's a draw!";
+        } else {
+            char buf[128];
+            snprintf(buf, sizeof(buf), "Team %d wins!", winner + 1);
+            text = buf;
+            // TEAM_COLORS are "#rrggbb" strings; parse them into a Color.
+            const char* hex = TEAM_COLORS[winner % TEAM_COLORS_COUNT];
+            col = (Color){ (unsigned char)strtol(hex + 1, nullptr, 16),
+                           (unsigned char)strtol(hex + 3, nullptr, 16),
+                           (unsigned char)strtol(hex + 5, nullptr, 16),
+                           255 };
+        }
+        int fontSize = 48;
+        int x = GetScreenWidth() / 2 - MeasureText(text, fontSize) / 2;
+        int y = GetScreenHeight() / 2 - fontSize / 2;
+        DrawText(text, x, y, fontSize, col);
+
+        const char* hint = "Press Enter to return to the menu";
+        DrawText(hint,
+                 GetScreenWidth() / 2 - MeasureText(hint, 20) / 2,
+                 y + fontSize + 30, 20, LIGHTGRAY);
+    }
 }
 
 void renderFrame(float dt) {
@@ -354,6 +396,12 @@ void renderFrame(float dt) {
         .staticBodies = state->terrain ? state->terrain->getStaticCount() : 0,
         .dynamicBodies = state->terrain ? state->terrain->getDynamicCount() : 0
     });
+
+    // While it's not the player's move (settling, or the match is over) the
+    // simulation still renders; show the result overlay once it's over.
+    if (state->turn.state == TurnState::GAME_OVER) {
+        drawGameResult();
+    }
 }
 
 std::vector<Entities::Worm*> flattenWorms() {
