@@ -35,8 +35,9 @@ public:
     // worm may still move (retreat) but can no longer fire this turn.
     void noteFired();
 
-    // Input gating: movement is allowed in AIMING and RETREAT; firing is only
-    // allowed once, during AIMING.
+    // Input gating: movement is allowed in AIMING and RETREAT and firing is
+    // only allowed once, during AIMING — and never once the match has ended
+    // (state may still be PLAYING's phase after the last turn, so guard on it).
     bool canMove() const;
     bool canFire() const;
 

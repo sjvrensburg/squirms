@@ -20,13 +20,18 @@ void TurnSystem::update(float dt, bool worldSettled) {
     switch (phase) {
         case TurnPhase::AIMING:
             timer -= dt;
-            // Leave AIMING as soon as the worm has fired, the timer expires, or
-            // the current worm has died (its own blast, falling out of the map).
-            // The death check also covers a worm that vanished mid-flight.
-            if (firedThisTurn_ || timer <= 0.0f ||
-                !getCurrentWorm() || !getCurrentWorm()->isAlive()) {
+            // Leaving AIMING.
+            if (firedThisTurn_) {
+                // Just fired: a short retreat window lets the worm move without
+                // being able to fire again.
                 phase = TurnPhase::RETREAT;
                 retreatTimer_ = RETREAT_SECONDS;
+            } else if (timer <= 0.0f || !getCurrentWorm() || !getCurrentWorm()->isAlive()) {
+                // Timed out, or the current worm died (its own blast, falling
+                // out of the map): end the turn now and wait for the world to
+                // settle — no extra retreat window.
+                phase = TurnPhase::SETTLING;
+                settleTimer_ = SETTLE_CAP_SECONDS;
             }
             break;
 
@@ -56,11 +61,12 @@ void TurnSystem::noteFired() {
 }
 
 bool TurnSystem::canMove() const {
-    return phase == TurnPhase::AIMING || phase == TurnPhase::RETREAT;
+    return state == TurnState::PLAYING &&
+           (phase == TurnPhase::AIMING || phase == TurnPhase::RETREAT);
 }
 
 bool TurnSystem::canFire() const {
-    return phase == TurnPhase::AIMING && !firedThisTurn_;
+    return state == TurnState::PLAYING && phase == TurnPhase::AIMING && !firedThisTurn_;
 }
 
 Entities::Worm* TurnSystem::getCurrentWorm() {
@@ -118,9 +124,11 @@ MatchResult TurnSystem::evaluateResult(int* winner) const {
         }
     }
 
-    if (livingTeams <= 1) {
-        if (winner) *winner = lastLivingTeam;  // -1 when no worms are left (draw)
-        return MatchResult::TEAM_WON;
+    if (livingTeams == 0) {
+        if (winner) *winner = -1;
+        return MatchResult::DRAW;
     }
+    if (winner) *winner = lastLivingTeam;
+    return MatchResult::TEAM_WON;
     return MatchResult::IN_PROGRESS;
 }

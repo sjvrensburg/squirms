@@ -343,11 +343,11 @@ static void drawGameResult() {
     if (state->turn.evaluateResult(&winner) != MatchResult::IN_PROGRESS) {
         const char* text;
         Color col = WHITE;
+        char buf[128];  // declared before the branch so it outlives the DrawText calls below
         if (winner < 0) {
             // No worms left anywhere: it's a draw.
             text = "It's a draw!";
         } else {
-            char buf[128];
             snprintf(buf, sizeof(buf), "Team %d wins!", winner + 1);
             text = buf;
             // TEAM_COLORS are "#rrggbb" strings; parse them into a Color.
