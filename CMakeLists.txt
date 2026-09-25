@@ -66,4 +66,9 @@ target_link_options(squirms_wasm PRIVATE
     -sUSE_WEBGPU=0
     -sUSE_GLFW=3
     -sSTRICT=0
+    # Fonts are baked into the build so dist/ stays just index.html + js + wasm.
+    --embed-file ${CMAKE_SOURCE_DIR}/assets/fonts@/assets/fonts
 )
+set_property(TARGET squirms_wasm APPEND PROPERTY LINK_DEPENDS
+    ${CMAKE_SOURCE_DIR}/assets/fonts/Montserrat-Black.otf
+    ${CMAKE_SOURCE_DIR}/assets/fonts/Montserrat-Bold.otf)
