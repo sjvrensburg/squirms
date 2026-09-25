@@ -25,6 +25,10 @@ public:
     bool grounded = false;
     bool alive = true;
     std::string name;
+    // Logical facing for backflips (the body is fixed-rotation and never
+    // actually turns). Defaults to +1 (right); walk() updates it, so a
+    // backflip hops backward relative to the direction the worm last walked.
+    int facing = 1;
     
     Worm(float x, float y, int team, const char* color);
     void init(World* world, float px, float py);

@@ -43,20 +43,48 @@ void Worm::update(float dt) {
         return;
     }
 
-    // Real grounded check: ray-cast straight down from the worm's feet and see
-    // whether anything other than itself is there. A hit on terrain, or on
-    // another worm/body, means the worm is actually standing on something.
+    // Real grounded check: ray-cast straight down from just above the worm's
+    // feet. The ray must start above the terrain surface, not below the feet:
+    // Box2D's polygon ray-cast reports a negative fraction for a ray that
+    // begins *inside* a shape and rejects it, so a ray starting under the feet
+    // (inside the surface chunk the resting worm sits on) would never hit.
+    //
+    // We cast three rays across the worm's width (left foot, centre, right
+    // foot) and treat the worm as grounded if any of them hits a surface whose
+    // normal points up. The spread matters at a ledge corner: if the worm's
+    // centre has just past the edge, the centre ray falls off the ledge while
+    // the outer foot still rests on it, so a single centre ray would wrongly
+    // report "in the air". A hit on terrain, or on another worm/body, counts
+    // (a sloped top face still has an up-normal; a vertical side or
+    // under-surface does not).
+    //
+    // The tolerance below the feet is kept small so the worm must be
+    // essentially in contact with the ground, not floating a cell or two
+    // above it (which would let it walk/re-jump in mid air).
     b2Vec2 pos = body->GetPosition();
-    b2Vec2 origin(pos.x, pos.y - 1.1f);  // just below the feet
-    b2Vec2 target(pos.x, pos.y - 1.6f);
+    const float halfHeight = 1.0f;  // fixture half-height; feet sit here
+    const float lift = 0.1f;        // start this far above the feet (above surface)
+    const float tolerance = 0.15f;  // ground may be this far below the feet
+    const float offsets[3] = {-0.4f, 0.0f, 0.4f};  // inside the 0.5m half-width
 
-    World::RayCastResult hit;
-    grounded = world && world->RayCast(origin, target, hit, body);
+    grounded = false;
+    for (float ox : offsets) {
+        b2Vec2 origin(pos.x + ox, pos.y - (halfHeight - lift));
+        b2Vec2 target(pos.x + ox, pos.y - (halfHeight + tolerance));
+        World::RayCastResult hit;
+        if (world && world->RayCast(origin, target, hit, body) && hit.normal.y > 0.0f) {
+            grounded = true;
+            break;
+        }
+    }
 }
 
 void Worm::walk(int direction, float dt) {
     if (!alive || !body || !grounded) return;
-    
+
+    // Remember which way we're moving so a backflip can hop the opposite way.
+    if (direction) facing = direction;
+
     float speed = 4.0f;
     b2Vec2 vel = body->GetLinearVelocity();
     vel.x = direction * speed;
@@ -65,22 +93,29 @@ void Worm::walk(int direction, float dt) {
 
 void Worm::jump() {
     if (!alive || !body || !grounded) return;
-    
-    float jumpForce = 12.0f;
+
+    // A short hop, not a giant arc: apex = v^2 / 2g = 49 / 20 ~= 2.45m (about
+    // 4 terrain cells), enough to clear a small bump but nowhere near a hill.
+    const float jumpVelocity = 7.0f;
     b2Vec2 vel = body->GetLinearVelocity();
-    vel.y = jumpForce;
+    vel.y = jumpVelocity;
+    vel.x = 0.0f;  // hop straight up
     body->SetLinearVelocity(vel);
+    body->SetAwake(true);
 }
 
 void Worm::backflip() {
     if (!alive || !body || !grounded) return;
 
     // fixedRotation keeps the worm upright, so a backflip can't actually spin
-    // the body (that's a renderer concern, out of scope here). It still hops
-    // straight up off the ground and lands again, as a Worms backflip does.
+    // the body (that's a renderer concern, out of scope here). It hops higher
+    // and farther than a normal jump, and backward: opposite the worm's facing
+    // (its last walk direction). Apex = 81 / 20 ~= 4.05m.
+    const float backflipVelocity = 9.0f;
+    const float backflipKick = 1.5f;
     b2Vec2 vel = body->GetLinearVelocity();
-    vel.y = 10.0f;
-    vel.x = 0.0f;  // spring up in place
+    vel.y = backflipVelocity;
+    vel.x = -facing * backflipKick;  // backward relative to facing
     body->SetLinearVelocity(vel);
     body->SetAwake(true);
 }
