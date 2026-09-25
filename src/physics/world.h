@@ -63,20 +63,16 @@ public:
     BodyKind getBodyKind(void* body);
     void getContacts(void* key, std::vector<BodyContact>& out);
 
-    // Configure a body's first-fixture restitution and collision filter
-    // (categoryBits/maskBits). Projectiles get a unique category so the shooter
-    // can be excluded from colliding with its own shell (Box2D category/mask
-    // filtering), and grenades get a non-zero restitution so Box2D ricochets
+    // Configure a body's first-fixture restitution. Projectiles use 0 so they
+    // stop on first contact; grenades use a non-zero value so Box2D ricochets
     // them with the real approach velocity.
-    void configureFixture(void* body, float restitution, float restitutionThreshold,
-                          uint16_t category, uint16_t mask);
-    // Stop `ownerBody` from colliding with projectiles carrying `category` by
-    // clearing that category bit from the owner's fixture mask. The owner's
-    // original mask is remembered once so repeated shots don't shrink it.
-    void excludeFromShooter(void* ownerBody, uint16_t category);
+    void configureFixture(void* body, float restitution, float restitutionThreshold);
+    // Tag a body's Box2D user data. Projectiles tag their owner's body pointer
+    // so the contact filter can suppress collisions between a shell and the
+    // worm that fired it (see OwnerExclusionFilter).
+
+    void setBodyUserData(void* body, void* userData);
 
 private:
     Impl* impl_;
 };
-
-void setupCategories(World* world);

@@ -34,19 +34,18 @@ void Projectile::launch(World* world, float px, float py, float angle, float spe
     };
     world->createPolygonFixture(body, verts, 1.5f, 0.3f); // density, friction
 
-    // Give the shell a unique collision category and keep it from colliding
-    // with the worm that fired it (Box2D category/mask filtering), so even a
-    // point-blank shot at its shooter's feet never shoves the shooter. The
-    // mask is cleared for the owner only; other worms still register hits.
-    static uint32_t s_projCatCounter = 0;
-    uint16_t projCat = uint16_t(1 << ((s_projCatCounter++ & 14) + 1));
     // Bazookas never bounce (they detonate on first contact); grenades bounce
     // with the configured restitution. The low threshold lets even a moderate
     // hit ricochet instead of being swallowed by Box2D's default threshold.
     float restitution = (type == ProjectileType::Grenade) ? bounceRestitution : 0.0f;
-    world->configureFixture(body, restitution, 0.5f, projCat, 0xFFFF);
+    world->configureFixture(body, restitution, 0.5f);
+    // Tag the shell with its owner's body pointer so the contact filter can
+    // suppress collisions between this shell and the worm that fired it. This
+    // is evaluated live at contact time, so it never corrupts any persistent
+    // collision mask and stays correct no matter how many shells have been
+    // fired, by whom, or in what order.
+    if (ownerBody) world->setBodyUserData(body, ownerBody);
     world->registerBody(body, World::BodyKind::Projectile);
-    if (ownerBody) world->excludeFromShooter(ownerBody, projCat);
 
     // `angle` is in pixel space (+y down); Box2D is Y-up, so negate the y component.
     float speedMs = speed / Terrain::PPM;
@@ -91,7 +90,8 @@ void Projectile::update(World* world, float dt,
     }
 
     // Resolve contacts outside any Box2D callback. The shooter is excluded from
-    // collision by category filter, so it never appears here.
+    // collision by the contact filter (shell/user-data tag), so it never
+    // appears here.
     std::vector<World::BodyContact> contacts;
     world->getContacts(body, contacts);
     for (const auto& c : contacts) {

@@ -147,9 +147,6 @@ void initGame(int teamCount, int wormsPerTeam, int seed) {
     // Initialize turn system
     state->turn = TurnSystem(state->worms, teamCount);
     state->camera.setFollow(state->turn.getCurrentWorm());
-
-    // Setup categories
-    setupCategories(state->world);
 }
 
 void fireWeapon();

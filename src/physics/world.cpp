@@ -40,11 +40,9 @@ public:
     b2World* world = nullptr;
     std::vector<b2Body*> bodies;
     b2ContactListener* listener = nullptr;
+    b2ContactFilter* filter = nullptr;
     std::map<void*, BodyKind> bodyKinds;
     std::map<void*, std::map<void*, BodyContact>> contacts;
-    // Maps a shooter body to its original fixture mask (captured once) so that
-    // excluding its shells from colliding never erases its other masks.
-    std::map<void*, uint16_t> ownerBaseMask;
 
     Impl(float gx, float gy);
     ~Impl();
@@ -82,6 +80,27 @@ public:
         owner->contacts[b].erase(a);
     }
 };
+
+// Suppresses contacts between a shell and the worm that fired it. Each shell
+// tags its body with the owner's b2Body* in Box2D user data; every other body
+// (the owner, worms, terrain) leaves that pointer null. This is evaluated live
+// at contact time, so it never mutates persistent collision masks: it is
+// correct regardless of how many shells have been fired, by whom, or in what
+// order, and regardless of how the category counter cycles.
+class OwnerExclusionFilter : public b2ContactFilter {
+public:
+    bool ShouldCollide(b2Fixture* a, b2Fixture* b) override {
+        // Default category/mask + groupIndex behavior for everything else.
+        if (!b2ContactFilter::ShouldCollide(a, b)) return false;
+        b2Body* bodyA = a->GetBody();
+        b2Body* bodyB = b->GetBody();
+        void* ownerA = reinterpret_cast<void*>(bodyA->GetUserData().pointer);
+        void* ownerB = reinterpret_cast<void*>(bodyB->GetUserData().pointer);
+        if (ownerA && bodyB == static_cast<b2Body*>(ownerA)) return false;
+        if (ownerB && bodyA == static_cast<b2Body*>(ownerB)) return false;
+        return true;
+    }
+};
 } // namespace
 
 World::Impl::Impl(float gx, float gy) {
@@ -91,9 +110,12 @@ World::Impl::Impl(float gx, float gy) {
     world->SetWarmStarting(true);
     listener = new WorldContactListener(this);
     world->SetContactListener(listener);
+    filter = new OwnerExclusionFilter();
+    world->SetContactFilter(filter);
 }
 
 World::Impl::~Impl() {
+    delete filter;
     delete world;
 }
 
@@ -138,7 +160,6 @@ void World::destroyBody(void* body) {
     impl->contacts.erase(b);
     for (auto& kv : impl->contacts) kv.second.erase(b);
     impl->bodyKinds.erase(b);
-    impl->ownerBaseMask.erase(b);
 }
 
 void* World::createPolygonFixture(void* body, const std::vector<Vector2>& verts, float friction) {
@@ -231,34 +252,19 @@ void World::getContacts(void* key, std::vector<BodyContact>& out) {
     }
 }
 
-void World::configureFixture(void* body, float restitution, float restitutionThreshold,
-                             uint16_t category, uint16_t mask) {
+void World::configureFixture(void* body, float restitution, float restitutionThreshold) {
     if (!body) return;
     b2Body* b = static_cast<b2Body*>(body);
     b2Fixture* fx = b->GetFixtureList();
     if (!fx) return;
-    b2Filter f = fx->GetFilterData();
-    f.categoryBits = category;
-    f.maskBits = mask;
-    fx->SetFilterData(f);
     fx->SetRestitution(restitution);
     fx->SetRestitutionThreshold(restitutionThreshold);
 }
 
-void World::excludeFromShooter(void* ownerBody, uint16_t category) {
-    if (!ownerBody || category == 0) return;
-    b2Body* b = static_cast<b2Body*>(ownerBody);
-    b2Fixture* fx = b->GetFixtureList();
-    if (!fx) return;
-    auto* impl = static_cast<Impl*>(impl_);
-    b2Filter f = fx->GetFilterData();
-    auto it = impl->ownerBaseMask.find(b);
-    uint16_t base = f.maskBits;
-    if (it != impl->ownerBaseMask.end()) {
-        base = it->second;  // keep the original mask so bits never shrink
-    }
-    f.maskBits = base & static_cast<uint16_t>(~category);
-    fx->SetFilterData(f);
+void World::setBodyUserData(void* body, void* userData) {
+    if (!body) return;
+    b2Body* b = static_cast<b2Body*>(body);
+    b->GetUserData().pointer = reinterpret_cast<uintptr_t>(userData);
 }
 
 void setupCategories(World* world) {
