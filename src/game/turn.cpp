@@ -128,7 +128,11 @@ MatchResult TurnSystem::evaluateResult(int* winner) const {
         if (winner) *winner = -1;
         return MatchResult::DRAW;
     }
-    if (winner) *winner = lastLivingTeam;
-    return MatchResult::TEAM_WON;
+    if (livingTeams == 1) {
+        if (winner) *winner = lastLivingTeam;
+        return MatchResult::TEAM_WON;
+    }
+    // Two or more teams still have living worms: the match continues.
+    return MatchResult::IN_PROGRESS;
     return MatchResult::IN_PROGRESS;
 }

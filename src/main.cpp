@@ -336,6 +336,23 @@ void fireWeapon() {
     Audio::playSound("fire");
 }
 
+// Parse a single "#rrggbb" team colour into a raylib Color. Each channel is
+// exactly two hex digits: strtol would otherwise consume the whole remaining
+// string, so mask it down to one byte per channel here.
+static Color teamColor(int teamIndex) {
+    const char* hex = TEAM_COLORS[teamIndex % TEAM_COLORS_COUNT];
+    auto nibble = [](char c) -> int {
+        if (c >= '0' && c <= '9') return c - '0';
+        if (c >= 'a' && c <= 'f') return c - 'a' + 10;
+        if (c >= 'A' && c <= 'F') return c - 'A' + 10;
+        return 0;
+    };
+    auto byte = [&](int off) -> unsigned char {
+        return (unsigned char)((nibble(hex[off]) << 4) | nibble(hex[off + 1]));
+    };
+    return (Color){ byte(1), byte(3), byte(5), 255 };
+}
+
 // Draw the match-result overlay shown while the simulation keeps running after
 // the game ends: names the winning team in its colour, or says it's a draw.
 static void drawGameResult() {
@@ -350,12 +367,7 @@ static void drawGameResult() {
         } else {
             snprintf(buf, sizeof(buf), "Team %d wins!", winner + 1);
             text = buf;
-            // TEAM_COLORS are "#rrggbb" strings; parse them into a Color.
-            const char* hex = TEAM_COLORS[winner % TEAM_COLORS_COUNT];
-            col = (Color){ (unsigned char)strtol(hex + 1, nullptr, 16),
-                           (unsigned char)strtol(hex + 3, nullptr, 16),
-                           (unsigned char)strtol(hex + 5, nullptr, 16),
-                           255 };
+            col = teamColor(winner);
         }
         int fontSize = 48;
         int x = GetScreenWidth() / 2 - MeasureText(text, fontSize) / 2;
