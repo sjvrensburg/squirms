@@ -18,9 +18,8 @@ void Worm::init(World* world, float px, float py) {
     // askew; a Worms avatar stands straight rather than flipping on its side.
     body = static_cast<b2Body*>(world->createBody(px, bodyY, true));
     // Classify this body so weapon contacts can tell worms from terrain.
-    world->registerBody(body, World::BodyKind::Worm);
-    
     if (!body) return;
+    world->registerBody(body, World::BodyKind::Worm);
     
     // Create worm shape (capsule-like polygon)
     std::vector<Vector2> verts;

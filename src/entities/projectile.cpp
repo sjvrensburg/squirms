@@ -8,10 +8,8 @@
 namespace {
 // Tunables (feel only — the game is build-verified, not tuned in-browser here).
 constexpr float windAccel = 1.5f;        // m/s² sideways accel per unit of wind (bazooka)
-constexpr float ownerKick = 2.0f;        // impulse to separate from the shooter as we leave it
 constexpr float graceTime = 0.1f;        // s before a shell can hit terrain/worms (clears spawn)
-constexpr float bounceRestitution = 0.5f;// fraction of approach speed preserved on a bounce
-constexpr float bounceThreshold = 0.5f;  // m/s approach speed below which a shell rests, not bounces
+constexpr float bounceRestitution = 0.5f;// fraction of approach speed a grenade keeps on a bounce
 } // namespace
 
 namespace Entities {
@@ -35,7 +33,20 @@ void Projectile::launch(World* world, float px, float py, float angle, float spe
         {-half, -half}, {half, -half}, {half, half}, {-half, half}
     };
     world->createPolygonFixture(body, verts, 1.5f, 0.3f); // density, friction
+
+    // Give the shell a unique collision category and keep it from colliding
+    // with the worm that fired it (Box2D category/mask filtering), so even a
+    // point-blank shot at its shooter's feet never shoves the shooter. The
+    // mask is cleared for the owner only; other worms still register hits.
+    static uint32_t s_projCatCounter = 0;
+    uint16_t projCat = uint16_t(1 << ((s_projCatCounter++ & 14) + 1));
+    // Bazookas never bounce (they detonate on first contact); grenades bounce
+    // with the configured restitution. The low threshold lets even a moderate
+    // hit ricochet instead of being swallowed by Box2D's default threshold.
+    float restitution = (type == ProjectileType::Grenade) ? bounceRestitution : 0.0f;
+    world->configureFixture(body, restitution, 0.5f, projCat, 0xFFFF);
     world->registerBody(body, World::BodyKind::Projectile);
+    if (ownerBody) world->excludeFromShooter(ownerBody, projCat);
 
     // `angle` is in pixel space (+y down); Box2D is Y-up, so negate the y component.
     float speedMs = speed / Terrain::PPM;
@@ -48,16 +59,20 @@ void Projectile::update(World* world, float dt,
     if (!alive || !body) return;
     age += dt;
 
-    // Keep the renderer's position fresh (pixel space).
+    // Keep the renderer's position fresh (pixel space). Un-flip Box2D's Y-up
+    // metres back to pixel space: (WORLD_H - bodyY) * PPM, matching
+    // Worm::getPosition().
     Vector2 bp = world->getBodyPosition(body);
     drawX = bp.x * Terrain::PPM;
-    drawY = Terrain::WORLD_H - bp.y * Terrain::PPM;
+    drawY = (Terrain::WORLD_H - bp.y) * Terrain::PPM;
 
     // Bazooka shells are pushed sideways by wind. Applied as an impulse so
-    // Box2D keeps integrating gravity correctly for the rest of the step.
+    // Box2D keeps integrating gravity correctly for the rest of the step;
+    // multiplying by dt turns the per-second acceleration into a proper impulse
+    // (impulse = mass * delta-v = mass * acceleration * dt).
     if (type == ProjectileType::Bazooka && wind != 0.0f) {
         float mass = world->getBodyMass(body);
-        world->applyLinearImpulse(body, wind * windAccel * mass, 0.0f);
+        world->applyLinearImpulse(body, wind * windAccel * mass * dt, 0.0f);
     }
 
     // Grenade fuse: detonate wherever it is once the time is up.
@@ -67,34 +82,19 @@ void Projectile::update(World* world, float dt,
         return;
     }
 
-    // Out of bounds: leave the world without exploding. `bp` is in Box2D
-    // metres (world spans 0..WORLD_W x 0..WORLD_H); drawX/drawY are pixels, so
-    // compare against the meter bounds here.
+    // Out of bounds: only the sides or the bottom remove a shell. A high lob
+    // that leaves the top of the world arcs back down, so don't kill it there.
     if (bp.x < -0.5f || bp.x > (float)Terrain::WORLD_W + 0.5f ||
-        bp.y < -0.5f || bp.y > (float)Terrain::WORLD_H + 0.5f) {
+        bp.y < -0.5f) {
         alive = false;
         return;
     }
 
-    // Resolve contacts outside any Box2D callback.
+    // Resolve contacts outside any Box2D callback. The shooter is excluded from
+    // collision by category filter, so it never appears here.
     std::vector<World::BodyContact> contacts;
     world->getContacts(body, contacts);
     for (const auto& c : contacts) {
-        if (c.body == ownerBody) {
-            // Separate from the shooter: nudge away along the owner->shell
-            // line so we don't detonate against the worm we just left.
-            Vector2 op = world->getBodyPosition(ownerBody);
-            float ox = bp.x - op.x, oy = bp.y - op.y;
-            float len = sqrtf(ox * ox + oy * oy);
-            if (len < 1e-4f) {      // exact overlap (spawns inside the worm): push up
-                oy = -1.0f; len = 1.0f;
-            } else {
-                ox /= len; oy /= len;
-            }
-            world->applyLinearImpulse(body, ox * ownerKick, oy * ownerKick);
-            continue;
-        }
-
         // While clearing the spawn point, ignore terrain/worm contact so the
         // shell can't be instantly detonated where it was launched.
         if (age < graceTime) continue;
@@ -107,31 +107,19 @@ void Projectile::update(World* world, float dt,
                 alive = false;
                 return;
             }
-            // Grenade ricochets off terrain and worms.
-            bounce(world, c);
+            // Grenade: Box2D restitution ricochets it off terrain and worms.
         }
         // Projectile / Unknown contacts are ignored.
     }
 }
 
-void Projectile::bounce(World* world, const World::BodyContact& c) {
-    Vector2 vel = world->getBodyVelocity(body);
-    // vn < 0 means the shell is moving toward the surface. If it's barely
-    // approaching, let it rest (and wait for the fuse) instead of jitter-bouncing.
-    float vn = vel.x * c.normal.x + vel.y * c.normal.y;
-    if (vn > -bounceThreshold) return;
-    Vector2 reflected;
-    reflected.x = vel.x - (1.0f + bounceRestitution) * vn * c.normal.x;
-    reflected.y = vel.y - (1.0f + bounceRestitution) * vn * c.normal.y;
-    world->setBodyVelocity(body, reflected.x, reflected.y);
-}
-
 void Projectile::explode(World* world, Vector2 pointMetersYup,
                          const std::vector<std::vector<Worm*>>& worms,
                          std::vector<Explosion>* fx) {
-    // Convert the contact point back to pixel space for the blast.
+    // Convert the contact point back to pixel space for the blast:
+    // (WORLD_H - bodyY) * PPM, matching Worm::getPosition().
     float px = pointMetersYup.x * Terrain::PPM;
-    float py = Terrain::WORLD_H - pointMetersYup.y * Terrain::PPM;
+    float py = (Terrain::WORLD_H - pointMetersYup.y) * Terrain::PPM;
     createExplosion(world, px, py, radius, damage, terrain, worms);
     if (fx) fx->emplace_back(px, py, radius, damage);
 }

@@ -52,8 +52,6 @@ public:
     bool isAlive() const { return alive; }
 
 private:
-    // Reflect the shell's velocity off a contact surface (grenade ricochet).
-    void bounce(World* world, const World::BodyContact& c);
     // Detonate at a point (Box2D Y-up metres): damage the world/worms and
     // record an Explosion for the renderer.
     void explode(World* world, Vector2 pointMetersYup,

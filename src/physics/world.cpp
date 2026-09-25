@@ -9,6 +9,7 @@
 #include <vector>
 #include <memory>
 #include <map>
+#include <cstdint>
 
 namespace {
 // Collects the closest non-ignored fixture hit from a world ray-cast. Returning
@@ -41,6 +42,9 @@ public:
     b2ContactListener* listener = nullptr;
     std::map<void*, BodyKind> bodyKinds;
     std::map<void*, std::map<void*, BodyContact>> contacts;
+    // Maps a shooter body to its original fixture mask (captured once) so that
+    // excluding its shells from colliding never erases its other masks.
+    std::map<void*, uint16_t> ownerBaseMask;
 
     Impl(float gx, float gy);
     ~Impl();
@@ -134,6 +138,7 @@ void World::destroyBody(void* body) {
     impl->contacts.erase(b);
     for (auto& kv : impl->contacts) kv.second.erase(b);
     impl->bodyKinds.erase(b);
+    impl->ownerBaseMask.erase(b);
 }
 
 void* World::createPolygonFixture(void* body, const std::vector<Vector2>& verts, float friction) {
@@ -224,6 +229,36 @@ void World::getContacts(void* key, std::vector<BodyContact>& out) {
     for (auto& kv : it->second) {
         out.push_back(kv.second);
     }
+}
+
+void World::configureFixture(void* body, float restitution, float restitutionThreshold,
+                             uint16_t category, uint16_t mask) {
+    if (!body) return;
+    b2Body* b = static_cast<b2Body*>(body);
+    b2Fixture* fx = b->GetFixtureList();
+    if (!fx) return;
+    b2Filter f = fx->GetFilterData();
+    f.categoryBits = category;
+    f.maskBits = mask;
+    fx->SetFilterData(f);
+    fx->SetRestitution(restitution);
+    fx->SetRestitutionThreshold(restitutionThreshold);
+}
+
+void World::excludeFromShooter(void* ownerBody, uint16_t category) {
+    if (!ownerBody || category == 0) return;
+    b2Body* b = static_cast<b2Body*>(ownerBody);
+    b2Fixture* fx = b->GetFixtureList();
+    if (!fx) return;
+    auto* impl = static_cast<Impl*>(impl_);
+    b2Filter f = fx->GetFilterData();
+    auto it = impl->ownerBaseMask.find(b);
+    uint16_t base = f.maskBits;
+    if (it != impl->ownerBaseMask.end()) {
+        base = it->second;  // keep the original mask so bits never shrink
+    }
+    f.maskBits = base & static_cast<uint16_t>(~category);
+    fx->SetFilterData(f);
 }
 
 void setupCategories(World* world) {

@@ -51,7 +51,9 @@ void createExplosion(World* world, float x, float y, float radius, float damage,
             if (dist < radius) {
                 float falloff = 1.0f - dist / radius;
                 float nx = dist > 1e-4f ? dx / dist : 0.0f;
-                float ny = dist > 1e-4f ? dy / dist : 0.0f;
+                // ny is in pixel space (Y-down); takeDamage applies the impulse
+                // in Box2D's Y-up space, so flip the vertical component.
+                float ny = dist > 1e-4f ? -(dy / dist) : 0.0f;
                 float kick = 1.5f * falloff; // stronger nearer the centre
                 worm->takeDamage(damage * falloff, nx * kick, ny * kick);
             }
