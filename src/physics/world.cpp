@@ -3,8 +3,30 @@
 #include <box2d/b2_fixture.h>
 #include <box2d/b2_polygon_shape.h>
 #include <box2d/b2_world.h>
+#include <box2d/b2_world_callbacks.h>
 #include <vector>
 #include <memory>
+
+namespace {
+// Collects the closest non-ignored fixture hit from a world ray-cast. Returning
+// the hit fraction makes Box2D clip to it, so the first (closest) fixture wins;
+// returning -1 skips a fixture (used to ignore the querying body itself).
+class RayCastResultCallback : public b2RayCastCallback {
+public:
+    const b2Body* ignore;
+    World::RayCastResult result;
+    explicit RayCastResultCallback(const b2Body* ignoreBody) : ignore(ignoreBody) {}
+    float ReportFixture(b2Fixture* fixture, const b2Vec2& point, const b2Vec2& normal, float fraction) override {
+        if (fixture->GetBody() == ignore) return -1.0f;
+        result.body = fixture->GetBody();
+        result.fixture = fixture;
+        result.point = point;
+        result.normal = normal;
+        result.fraction = fraction;
+        return fraction;
+    }
+};
+} // namespace
 
 class World::Impl {
 public:
@@ -85,6 +107,16 @@ void* World::createPolygonFixture(void* body, const std::vector<Vector2>& verts,
     
     b->CreateFixture(&def);
     return nullptr;
+}
+
+bool World::RayCast(b2Vec2 p1, b2Vec2 p2, RayCastResult& out, const b2Body* ignoreBody) {
+    auto* impl = static_cast<Impl*>(impl_);
+    RayCastResultCallback cb(ignoreBody);
+    // b2World::RayCast() reports hits through the callback and returns void,
+    // so a populated result body means we found ground.
+    impl->world->RayCast(&cb, p1, p2);
+    if (cb.result.body) out = cb.result;
+    return cb.result.body != nullptr;
 }
 
 void World::step(float dt, int velocityIterations, int positionIterations) {

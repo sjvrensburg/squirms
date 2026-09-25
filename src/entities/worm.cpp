@@ -11,9 +11,12 @@ Worm::Worm(float x, float y, int team, const char* color)
 }
 
 void Worm::init(World* world, float px, float py) {
+    this->world = world;
     // Flip Y for Box2D Y-up convention (grid uses Y-down)
     float bodyY = Terrain::WORLD_H - py;
-    body = static_cast<b2Body*>(world->createBody(px, bodyY, false));
+    // fixedRotation keeps the worm upright so it never tips over when it lands
+    // askew; a Worms avatar stands straight rather than flipping on its side.
+    body = static_cast<b2Body*>(world->createBody(px, bodyY, true));
     
     if (!body) return;
     
@@ -32,23 +35,23 @@ void Worm::init(World* world, float px, float py) {
 
 void Worm::update(float dt) {
     if (!alive || !body) return;
-    
-    // Check if grounded via raycast (simplified)
-    b2Vec2 pos = body->GetPosition();
-    b2Vec2 origin(pos.x, pos.y - 1.1f);
-    b2Vec2 target(pos.x, pos.y - 1.5f);
-    
-    b2RayCastInput input;
-    input.p1 = origin;
-    input.p2 = target;
-    input.maxFraction = 1.0f;
-    
-    b2RayCastOutput output;
-    b2Fixture* fixture = body->GetFixtureList();
-    if (fixture) {
-        // Simple grounded check - in real impl would query world
-        grounded = false;
+
+    // Fell out of the world (Box2D Y-up: the bottom of the world is y = 0,
+    // see init()); a worm that drops below it dies.
+    if (body->GetPosition().y < -0.5f) {
+        die();
+        return;
     }
+
+    // Real grounded check: ray-cast straight down from the worm's feet and see
+    // whether anything other than itself is there. A hit on terrain, or on
+    // another worm/body, means the worm is actually standing on something.
+    b2Vec2 pos = body->GetPosition();
+    b2Vec2 origin(pos.x, pos.y - 1.1f);  // just below the feet
+    b2Vec2 target(pos.x, pos.y - 1.6f);
+
+    World::RayCastResult hit;
+    grounded = world && world->RayCast(origin, target, hit, body);
 }
 
 void Worm::walk(int direction, float dt) {
@@ -71,9 +74,15 @@ void Worm::jump() {
 
 void Worm::backflip() {
     if (!alive || !body || !grounded) return;
-    
-    // Apply angular impulse for backflip
-    body->ApplyAngularImpulse(5.0f, true);
+
+    // fixedRotation keeps the worm upright, so a backflip can't actually spin
+    // the body (that's a renderer concern, out of scope here). It still hops
+    // straight up off the ground and lands again, as a Worms backflip does.
+    b2Vec2 vel = body->GetLinearVelocity();
+    vel.y = 10.0f;
+    vel.x = 0.0f;  // spring up in place
+    body->SetLinearVelocity(vel);
+    body->SetAwake(true);
 }
 
 void Worm::takeDamage(float damage, float kx, float ky) {
@@ -101,8 +110,9 @@ Vector2 Worm::getPosition() const {
 void Worm::die() {
     alive = false;
     if (body) {
-        // Mark as dead but keep physics body for a moment
-        body->SetAwake(false);
+        // Stop colliding with anything. The renderer already skips dead worms
+        // (isAlive()), so the body simply vanishes from the world.
+        body->SetEnabled(false);
     }
 }
 

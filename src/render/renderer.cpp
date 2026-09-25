@@ -61,8 +61,12 @@ void render(const GameCamera& camera, const ChunkGrid& chunks,
         // Get body rotation for visual orientation
         float angle = 0.0f;
         
-        // Draw worm body (ellipse)
-        DrawEllipse(screenPos.x, screenPos.y, 12, 8, ColorAlpha(ORANGE, 0.9f));
+        // Draw worm body (ellipse). The radii must match the physics box built
+        // in Worm::init(): that body is 1.0m wide x 2.0m tall, i.e. 32px x 64px
+        // at Terrain::PPM (half = 16px x 32px). Drawing a smaller ellipse here
+        // left the visible bottom ~24px above the feet that actually rest on the
+        // ground, so the worm looked like it was hovering.
+        DrawEllipse(screenPos.x, screenPos.y, 16, 32, ColorAlpha(ORANGE, 0.9f));
         
         // Draw eyes
         float eyeOffsetX = cosf(angle) * 6;

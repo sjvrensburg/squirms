@@ -18,6 +18,7 @@ struct WormConfig {
 class Worm {
 public:
     b2Body* body = nullptr;
+    World* world = nullptr;
     float hp, maxHp;
     int teamIndex;
     std::string color;
