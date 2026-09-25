@@ -2,6 +2,8 @@
 #include <box2d/b2_body.h>
 #include <box2d/b2_fixture.h>
 #include <box2d/b2_polygon_shape.h>
+#include <box2d/b2_circle_shape.h>
+#include <box2d/b2_distance_joint.h>
 #include <box2d/b2_world.h>
 #include <box2d/b2_world_callbacks.h>
 #include <box2d/b2_contact.h>
@@ -18,10 +20,13 @@ namespace {
 class RayCastResultCallback : public b2RayCastCallback {
 public:
     const b2Body* ignore;
+    uint16_t mask;
     World::RayCastResult result;
-    explicit RayCastResultCallback(const b2Body* ignoreBody) : ignore(ignoreBody) {}
+    RayCastResultCallback(const b2Body* ignoreBody, uint16_t m) : ignore(ignoreBody), mask(m) {}
     float ReportFixture(b2Fixture* fixture, const b2Vec2& point, const b2Vec2& normal, float fraction) override {
         if (fixture->GetBody() == ignore) return -1.0f;
+        if ((fixture->GetFilterData().categoryBits & mask) == 0) return -1.0f;
+        if (fixture->IsSensor()) return -1.0f;
         result.body = fixture->GetBody();
         result.fixture = fixture;
         result.point = point;
@@ -43,6 +48,7 @@ public:
     b2ContactFilter* filter = nullptr;
     std::map<void*, BodyKind> bodyKinds;
     std::map<void*, std::map<void*, BodyContact>> contacts;
+    b2Body* ground = nullptr;   // fixture-less static body that rope joints hang from
 
     Impl(float gx, float gy);
     ~Impl();
@@ -112,6 +118,9 @@ World::Impl::Impl(float gx, float gy) {
     world->SetContactListener(listener);
     filter = new OwnerExclusionFilter();
     world->SetContactFilter(filter);
+    b2BodyDef gd;
+    gd.type = b2_staticBody;
+    ground = world->CreateBody(&gd);
 }
 
 World::Impl::~Impl() {
@@ -189,9 +198,10 @@ void* World::createPolygonFixture(void* body, const std::vector<Vector2>& verts,
     return nullptr;
 }
 
-bool World::RayCast(b2Vec2 p1, b2Vec2 p2, RayCastResult& out, const b2Body* ignoreBody) {
+bool World::RayCast(b2Vec2 p1, b2Vec2 p2, RayCastResult& out, const b2Body* ignoreBody,
+                    uint16_t categoryMask) {
     auto* impl = static_cast<Impl*>(impl_);
-    RayCastResultCallback cb(ignoreBody);
+    RayCastResultCallback cb(ignoreBody, categoryMask);
     // b2World::RayCast() reports hits through the callback and returns void,
     // so a populated result body means we found ground.
     impl->world->RayCast(&cb, p1, p2);
@@ -282,6 +292,79 @@ void World::setBodyUserData(void* body, void* userData) {
     b->GetUserData().pointer = reinterpret_cast<uintptr_t>(userData);
 }
 
-void setupCategories(World* world) {
-    (void)world;
+void World::createCircleFixture(void* body, float cx, float cy, float radius,
+                                float density, float friction, float restitution) {
+    if (!body) return;
+    b2CircleShape shape;
+    shape.m_p.Set(cx, cy);
+    shape.m_radius = radius;
+    b2FixtureDef def;
+    def.shape = &shape;
+    def.density = density;
+    def.friction = friction;
+    def.restitution = restitution;
+    def.restitutionThreshold = 0.5f;
+    static_cast<b2Body*>(body)->CreateFixture(&def);
+}
+
+void World::setBodyFilter(void* body, uint16_t category, uint16_t mask) {
+    if (!body) return;
+    b2Filter f;
+    f.categoryBits = category;
+    f.maskBits = mask;
+    for (b2Fixture* fx = static_cast<b2Body*>(body)->GetFixtureList(); fx; fx = fx->GetNext()) {
+        fx->SetFilterData(f);
+    }
+}
+
+void World::setBullet(void* body, bool bullet) {
+    if (body) static_cast<b2Body*>(body)->SetBullet(bullet);
+}
+
+void World::setBodyTransform(void* body, float x, float y, float angle) {
+    if (!body) return;
+    b2Body* b = static_cast<b2Body*>(body);
+    b->SetTransform(b2Vec2(x, y), angle);
+    b->SetAwake(true);
+}
+
+void World::setAngularVelocity(void* body, float w) {
+    if (body) static_cast<b2Body*>(body)->SetAngularVelocity(w);
+}
+
+void World::setGravityScale(void* body, float scale) {
+    if (body) static_cast<b2Body*>(body)->SetGravityScale(scale);
+}
+
+void World::applyForce(void* body, float fx, float fy) {
+    if (!body) return;
+    b2Body* b = static_cast<b2Body*>(body);
+    b->ApplyForceToCenter(b2Vec2(fx, fy), true);
+}
+
+void* World::createRopeJoint(void* body, float anchorX, float anchorY, float maxLength) {
+    auto* impl = static_cast<Impl*>(impl_);
+    b2Body* b = static_cast<b2Body*>(body);
+    b2DistanceJointDef def;
+    def.Initialize(impl->ground, b, b2Vec2(anchorX, anchorY), b->GetWorldCenter());
+    def.collideConnected = false;
+    def.minLength = 0.0f;
+    def.maxLength = maxLength;
+    def.length = maxLength;
+    def.stiffness = 0.0f;   // rigid at the limit: a rope, not a spring
+    def.damping = 0.0f;
+    return impl->world->CreateJoint(&def);
+}
+
+void World::setRopeLength(void* joint, float maxLength) {
+    if (!joint) return;
+    auto* j = static_cast<b2DistanceJoint*>(joint);
+    j->SetLength(maxLength);
+    j->SetMaxLength(maxLength);
+    j->GetBodyB()->SetAwake(true);
+}
+
+void World::destroyJoint(void* joint) {
+    if (!joint) return;
+    static_cast<Impl*>(impl_)->world->DestroyJoint(static_cast<b2Joint*>(joint));
 }

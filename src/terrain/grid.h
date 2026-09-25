@@ -5,12 +5,20 @@
 
 namespace Terrain {
 
-constexpr int CELL = 20;
+// Chunk size in px. Small cells keep craters reading as round holes rather
+// than blocky bites; the static terrain is drawn from one cached texture (see
+// render/terrain_render.cpp), so the cell count doesn't drive draw calls.
+constexpr int CELL = 10;
 constexpr int PPM = 32;
 constexpr int WORLD_W = 75;
 constexpr int WORLD_H = 38;
 constexpr int COLS = (WORLD_W * PPM + CELL - 1) / CELL;
 constexpr int ROWS = (WORLD_H * PPM + CELL - 1) / CELL;
+constexpr int WORLD_PX_W = WORLD_W * PPM;
+constexpr int WORLD_PX_H = WORLD_H * PPM;
+// Pixel-space sea level. Anything that sinks below it drowns; the bedrock
+// floor that grounds the support flood-fill sits hidden underneath.
+constexpr float WATER_Y = (float)(WORLD_PX_H - 120);
 
 enum class Material { Dirt, Rock, Sand, Bedrock };
 
@@ -44,6 +52,10 @@ struct Chunk {
     int col, row;
     std::vector<std::pair<float, float>> verts;
     float centroidX, centroidY;
+    // The chunk's original pixel-space verts, fixed at build time. The
+    // renderer samples the terrain texture with these as UVs, so a chunk that
+    // fell and rotated still carries its own patch of soil/grass with it.
+    std::vector<std::pair<float, float>> uv;
     Material material;
     float hp;
     ChunkState state;

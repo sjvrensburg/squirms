@@ -1,62 +1,44 @@
 #pragma once
 #include <raylib.h>
-#include <vector>
 
-// Full World definition so we can name World::BodyContact in the contact
-// resolver signatures.
-#include "../physics/world.h"
-
-namespace Terrain { struct Chunk; class TerrainSystem; }
-namespace Entities { class Worm; class Explosion; }
+class World;
 
 namespace Entities {
 
-enum class ProjectileType { Bazooka, Grenade };
+enum class ProjectileType {
+    Bazooka, Grenade, Cluster, Clusterlet, Banana, Bananalet,
+    Holy, Dynamite, AirMissile, Sheep,
+};
 
-// A fired shell: a real Box2D dynamic body that flies under gravity, reacts to
-// wind (bazooka) or bounces (grenade), and explodes on terrain/worm contact or,
-// for the grenade, when its fuse runs out. The body is owned by World; this
-// object only holds a handle to it.
+// Anything thrown, fired, dropped or released that later goes bang. A real
+// Box2D body owned by World; this object only holds the handle. Behaviour
+// (fuses, bounces, the sheep's waddle) is driven by Game::updateProjectiles.
 class Projectile {
 public:
-    void* body = nullptr;         // b2Body* (owned by World)
-    ProjectileType type;
-    float radius;                  // blast radius, in pixels
-    float damage;
-    float fuseTime;                // seconds before a grenade detonates (0 for bazooka)
-    float age = 0.0f;              // seconds since launch
+    void* body = nullptr;
+    ProjectileType type = ProjectileType::Bazooka;
+    float radius = 40;           // crater radius, px
+    float damage = 40;
+    float fuse = 0;              // seconds left; <= 0 means no fuse
+    bool impact = false;         // detonates on first contact
+    bool windAffected = false;
     bool alive = true;
-    Worm* owner = nullptr;         // never explode against the worm that fired it
-    void* ownerBody = nullptr;
-    float wind = 0.0f;             // sideways wind acceleration (bazooka only)
-    Terrain::TerrainSystem* terrain = nullptr;
+    bool detonateNow = false;    // set by the player (sheep) or game logic
+    float age = 0;
+    void* ownerBody = nullptr;   // never collides with this worm's body
+    float angle = 0;             // draw angle, radians (pixel space)
+    int facing = 1;              // sheep walking direction
+    float hopTimer = 0;          // sheep
+    float lastBounceSound = 0;
 
-    // Pixel-space position of the shell's centre, updated each step so the
-    // renderer can draw it without needing World access.
-    float drawX = 0.0f, drawY = 0.0f;
+    // Pixel-space centre and velocity, refreshed every tick.
+    Vector2 pos{0, 0};
+    Vector2 vel{0, 0};
 
-    Projectile(ProjectileType type, float radiusPx, float damage, float fuseTime);
-
-    // Create the body at (px, py) [pixel space] heading in `angle` (radians,
-    // pixel space, +y down) with `speed` [px/s]. Registers it as a Projectile.
-    void launch(World* world, float px, float py, float angle, float speed);
-
-    // Advance one fixed step. Applies wind, resolves contacts, checks the fuse
-    // and world bounds, and explodes when due. Any resulting explosion is
-    // appended to `fx` (position/size already in pixel space); the shell is
-    // marked not alive. Out-of-bounds shells simply die without exploding.
-    void update(World* world, float dt,
-                const std::vector<std::vector<Worm*>>& worms,
-                std::vector<Explosion>* fx);
-
+    // Create the body at pixel (x, y) moving at pixel velocity (vx, vy).
+    void launch(World* world, ProjectileType type, float x, float y, float vx, float vy);
+    void destroy(World* world);
     bool isAlive() const { return alive; }
-
-private:
-    // Detonate at a point (Box2D Y-up metres): damage the world/worms and
-    // record an Explosion for the renderer.
-    void explode(World* world, Vector2 pointMetersYup,
-                 const std::vector<std::vector<Worm*>>& worms,
-                 std::vector<Explosion>* fx);
 };
 
 } // namespace Entities

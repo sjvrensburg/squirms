@@ -16,7 +16,15 @@ public:
 
     // What a body represents, so weapons can classify contact hits without
     // walking the chunk/worm lists themselves.
-    enum class BodyKind { Unknown, Terrain, Worm, Projectile };
+    enum class BodyKind { Unknown, Terrain, Worm, Projectile, Prop };
+
+    // Collision categories. Worms pass through each other and through props
+    // (crates/mines/barrels are triggered by proximity, as in Worms);
+    // shells hit everything except other shells.
+    static constexpr uint16_t CAT_TERRAIN = 0x0001;
+    static constexpr uint16_t CAT_WORM    = 0x0002;
+    static constexpr uint16_t CAT_PROJ    = 0x0004;
+    static constexpr uint16_t CAT_PROP    = 0x0008;
 
     // A single contact reported for a body: the other body involved, the
     // contact normal (points from A to B; sign is irrelevant for reflection),
@@ -45,7 +53,27 @@ public:
         b2Vec2 point;
         b2Vec2 normal;
     };
-    bool RayCast(b2Vec2 p1, b2Vec2 p2, RayCastResult& out, const b2Body* ignoreBody = nullptr);
+    // `categoryMask` restricts which fixture categories can be hit (e.g.
+    // CAT_TERRAIN for ground checks, so a grenade underfoot isn't "ground").
+    bool RayCast(b2Vec2 p1, b2Vec2 p2, RayCastResult& out, const b2Body* ignoreBody = nullptr,
+                 uint16_t categoryMask = 0xFFFF);
+
+    // Add a circle fixture (Box2D metres, body-local centre).
+    void createCircleFixture(void* body, float cx, float cy, float radius,
+                             float density, float friction, float restitution);
+    // Apply a collision category/mask to every fixture on a body.
+    void setBodyFilter(void* body, uint16_t category, uint16_t mask);
+    void setBullet(void* body, bool bullet);
+    void setBodyTransform(void* body, float x, float y, float angle);
+    void setAngularVelocity(void* body, float w);
+    void setGravityScale(void* body, float scale);
+    void applyForce(void* body, float fx, float fy);
+
+    // Ninja rope: a max-length-only distance joint from a fixed world point
+    // (Box2D metres) to `body`'s centre. Slack below maxLength, taut at it.
+    void* createRopeJoint(void* body, float anchorX, float anchorY, float maxLength);
+    void setRopeLength(void* joint, float maxLength);
+    void destroyJoint(void* joint);
 
     // Body accessors. Positions/velocities are in Box2D's Y-up metre space
     // (see CLAUDE.md); callers multiply by Terrain::PPM and un-flip Y to get

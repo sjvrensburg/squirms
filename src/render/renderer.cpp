@@ -1,296 +1,306 @@
 #include "renderer.h"
-#include "../game/camera.h"
-#include "../entities/worm.h"
-#include "../entities/explosion.h"
-#include "../entities/projectile.h"
-#include "../terrain/terrain.h"
+#include "sprites.h"
+#include "text.h"
+#include "../game/game.h"
+#include "../terrain/grid.h"
 #include <raylib.h>
 #include <algorithm>
 #include <cmath>
 #include <cstdio>
+#include <vector>
 
-// Parse a "#rrggbb" (or "rrggbb") string into a raylib Color. Each channel is
-// exactly two hex digits: strtol would otherwise consume the whole remaining
-// string, so parse one byte at a time here.
-static Color parseHexColor(const std::string& hex) {
-    const char* p = hex.c_str();
-    if (*p == '#') ++p;
-    auto nibble = [](char c) -> int {
-        if (c >= '0' && c <= '9') return c - '0';
-        if (c >= 'a' && c <= 'f') return c - 'a' + 10;
-        if (c >= 'A' && c <= 'F') return c - 'A' + 10;
-        return 0;
-    };
-    int r = (nibble(p[0]) << 4) | nibble(p[1]);
-    int g = (nibble(p[2]) << 4) | nibble(p[3]);
-    int b = (nibble(p[4]) << 4) | nibble(p[5]);
-    return (Color){ (unsigned char)r, (unsigned char)g, (unsigned char)b, 255 };
+namespace {
+
+const GameCamera* gCam = nullptr;
+Vector2 toScreen(Vector2 w) { return gCam->worldToScreen(w); }
+
+Color withAlpha(Color c, float a) {
+    c.a = (unsigned char)std::clamp(a * 255.0f, 0.0f, 255.0f);
+    return c;
+}
+Color mixC(Color a, Color b, float t) {
+    return Color{(unsigned char)(a.r + (b.r - a.r) * t), (unsigned char)(a.g + (b.g - a.g) * t),
+                 (unsigned char)(a.b + (b.b - a.b) * t), (unsigned char)(a.a + (b.a - a.a) * t)};
+}
+float hash1(float n) {
+    float s = sinf(n * 127.1f) * 43758.5453f;
+    return s - floorf(s);
 }
 
-// Fill the whole screen with a vertical sky gradient (lighter at the horizon,
-// deeper blue up high). This replaces the old flat DARKGRAY clear so the world
-// has a backdrop that is clearly distinct from every terrain material.
-static void drawSky(int screenWidth, int screenHeight) {
-    const Color top   = (Color){ 107, 183, 227, 255 };  // #6FB7E3
-    const Color bottom = (Color){ 209, 238, 247, 255 }; // #D1EEF7
-    for (int y = 0; y < screenHeight; y += 3) {
-        float t = (float)y / (float)(screenHeight > 3 ? screenHeight - 1 : 1);
-        Color c;
-        c.r = (unsigned char)(top.r + (bottom.r - top.r) * t);
-        c.g = (unsigned char)(top.g + (bottom.g - top.g) * t);
-        c.b = (unsigned char)(top.b + (bottom.b - top.b) * t);
-        c.a = 255;
-        DrawRectangle(0, y, screenWidth, 3, c);
-    }
-}
+// ---- Sky & backdrop (screen space) ----
 
-// True if every screen-space vertex of the quad lies outside the screen
-// (allowing a small margin), so the chunk can be skipped entirely.
-static bool chunkOffScreen(const std::vector<Vector2>& screenVerts,
-                           int w, int h) {
-    const int margin = 64;
-    bool anyX = false, anyY = false;
-    for (const auto& v : screenVerts) {
-        if (v.x >= -margin && v.x <= w + margin) anyX = true;
-        if (v.y >= -margin && v.y <= h + margin) anyY = true;
-    }
-    return !(anyX && anyY);
-}
+void drawSky(const Game& g, int sw, int sh, float t) {
+    const Theme& th = *g.theme;
+    DrawRectangleGradientV(0, 0, sw, sh, th.skyTop, th.skyBottom);
 
-// Draw a convex quad filled, with a subtle darker seam so neighbouring chunks
-// read as separate slabs rather than one flat slab. Verts are already in
-// screen space and ordered around the perimeter (top-left, top-right,
-// bottom-right, bottom-left, plus any jitter). We split the quad into two
-// triangles in perimeter order; raylib's primitive path has no face culling
-// enabled, so both windings render -- but keeping the natural order avoids any
-// degenerate fan-centre artefact and guarantees every chunk appears.
-static void drawFilledQuad(const std::vector<Vector2>& screenVerts, Color fill,
-                           Color seam) {
-    if (screenVerts.size() < 3) return;
-    // Fan from the first vertex covers a convex quad without an extra centre
-    // point; DrawTriangleFan tolerates any convex polygon.
-    DrawTriangleFan(screenVerts.data(), (int)screenVerts.size(), fill);
-    for (size_t i = 1; i < screenVerts.size(); ++i) {
-        DrawLineEx(screenVerts[i - 1], screenVerts[i], 1.0f, seam);
-    }
-    DrawLineEx(screenVerts.back(), screenVerts.front(), 1.0f, seam);
-}
-
-static void drawTerrainChunk(const Terrain::Chunk* chunk, const GameCamera& camera,
-                             int w, int h, bool debugMode) {
-    if (chunk->state == Terrain::ChunkState::GONE) return;
-
-    // Material colour, darkened a touch for bedrock so it reads as
-    // indestructible (darker + a cross-hatch) rather than just "another gray".
-    Color fill = parseHexColor(getMaterialProps(chunk->material).color);
-    Color seam = (Color){ fill.r, fill.g, fill.b, 160 };
-    bool isBedrock = chunk->material == Terrain::Material::Bedrock;
-    if (isBedrock) {
-        fill = (Color){ (unsigned char)(fill.r * 0.7f),
-                        (unsigned char)(fill.g * 0.7f),
-                        (unsigned char)(fill.b * 0.8f), 255 };
-    }
-
-    Vector2 screenCentroid = camera.worldToScreen((Vector2){chunk->centroidX, chunk->centroidY});
-
-    std::vector<Vector2> screenVerts;
-    if (chunk->state == Terrain::ChunkState::DYNAMIC && chunk->body) {
-        // Verts are stored in pixel space relative to the slab origin;
-        // rotate them about that origin, offset by the body's current
-        // pixel position, and un-flip Box2D's Y-up metres back to
-        // pixel space -- the same convention projectile.cpp uses.
-        float angle = chunk->bodyAngle;
-        float cxM = chunk->bodyDrawX / Terrain::PPM;
-        // bodyDrawY is already pixel space, so un-flip to Box2D metres once here.
-        float cyM = Terrain::WORLD_H - chunk->bodyDrawY / Terrain::PPM;
-        for (auto& v : chunk->verts) {
-            float lx = (v.first - chunk->bodyOriginX) / Terrain::PPM;
-            float ly = -(v.second - chunk->bodyOriginY) / Terrain::PPM;
-            float rx = lx * cosf(angle) - ly * sinf(angle);
-            float ry = lx * sinf(angle) + ly * cosf(angle);
-            float px = (cxM + rx) * Terrain::PPM;
-            float py = (Terrain::WORLD_H - (cyM + ry)) * Terrain::PPM;
-            screenVerts.push_back(camera.worldToScreen((Vector2){px, py}));
-        }
-    } else {
-        for (auto& v : chunk->verts) {
-            Vector2 worldPos = {(float)v.first, (float)v.second};
-            screenVerts.push_back(camera.worldToScreen(worldPos));
+    float camX = g.camera.x, camY = g.camera.y;
+    if (th.stars) {
+        for (int i = 0; i < 140; i++) {
+            float x = fmodf(hash1(i * 1.3f) * 4000 - camX * 0.04f, (float)sw + 40);
+            if (x < 0) x += sw + 40;
+            float y = hash1(i * 7.7f) * sh * 0.7f - camY * 0.02f;
+            float tw = 0.5f + 0.5f * sinf(t * (1.5f + hash1(i) * 3) + i);
+            DrawCircleV({x, y}, 0.8f + hash1(i * 3.1f) * 1.2f, withAlpha(WHITE, 0.3f + 0.6f * tw));
         }
     }
 
-    if (screenVerts.size() < 3) return;
-    if (chunkOffScreen(screenVerts, w, h)) return;
+    // Sun / moon, barely moving so it reads as far away.
+    Vector2 sun{sw * 0.78f - camX * 0.02f, sh * 0.2f - camY * 0.02f};
+    Color disc, glow;
+    float r;
+    switch (th.weather) {
+        case Weather::Leaves: disc = {255, 246, 200, 255}; glow = {255, 240, 170, 60}; r = 34; break;
+        case Weather::Dust:   disc = {255, 214, 120, 255}; glow = {255, 180, 90, 70}; r = 70; sun.y += sh * 0.12f; break;
+        case Weather::Snow:   disc = {236, 240, 255, 255}; glow = {200, 210, 255, 40}; r = 26; break;
+        default:              disc = {230, 70, 40, 255}; glow = {255, 60, 20, 60}; r = 44; break;
+    }
+    for (int i = 4; i >= 1; i--) DrawCircleV(sun, r * (1 + i * 0.45f), withAlpha(glow, glow.a / 255.0f * (1.0f / i)));
+    DrawCircleV(sun, r, disc);
 
-    // Falling (DYNAMIC) chunks are drawn in their normal material colour now;
-    // keep a subtle brighter rim only while the F1 debug overlay is on.
-    drawFilledQuad(screenVerts, fill, seam);
-    if (chunk->state == Terrain::ChunkState::DYNAMIC && debugMode) {
-        float pulse = 160 + 80 * (0.5f + 0.5f * sinf(GetTime() * 6.0f));
-        Color rim = (Color){ 255, 240, 140, (unsigned char)pulse };
-        for (size_t i = 1; i < screenVerts.size(); ++i) {
-            DrawLineEx(screenVerts[i - 1], screenVerts[i], 2.0f, rim);
+    // Clouds drifting with the wind.
+    bool hell = th.weather == Weather::Embers;
+    Color cloud = hell ? Color{60, 20, 20, 150} : Color{255, 255, 255, 190};
+    float span = sw + 400.0f;
+    for (int i = 0; i < 9; i++) {
+        float base = hash1(i * 3.7f) * span;
+        float x = fmodf(base + t * (6 + g.wind * 40) * (0.6f + hash1(i) * 0.8f) - camX * 0.18f, span);
+        if (x < 0) x += span;
+        x -= 200;
+        float y = sh * (0.08f + hash1(i * 5.3f) * 0.3f) - camY * 0.08f;
+        float s = 0.7f + hash1(i * 9.1f) * 0.9f;
+        for (int k = 0; k < 5; k++) {
+            float ox = (k - 2) * 26 * s, oy = -fabsf((float)(k - 2)) * -6 * s - (k % 2) * 10 * s;
+            DrawEllipse((int)(x + ox), (int)(y + oy), 34 * s, 20 * s, cloud);
         }
-        DrawLineEx(screenVerts.back(), screenVerts.front(), 2.0f, rim);
     }
 
-    // Bedrock cross-hatch: a few faint diagonal strokes so it is unmistakably
-    // solid/indestructible at a glance.
-    if (isBedrock) {
-        float minX = screenVerts[0].x, minY = screenVerts[0].y;
-        float maxX = screenVerts[0].x, maxY = screenVerts[0].y;
-        for (const auto& v : screenVerts) {
-            minX = std::min(minX, v.x); maxX = std::max(maxX, v.x);
-            minY = std::min(minY, v.y); maxY = std::max(maxY, v.y);
-        }
-        Color hatch = (Color){ 20, 20, 40, 150 };
-        for (float d = minX - (maxX - minX); d < maxX; d += 10.0f) {
-            DrawLineEx((Vector2){d, minY + (d - minX) * 0.1f},
-                       (Vector2){d + 8, minY + (d - minX) * 0.1f + 10}, 1.0f, hatch);
+    // Two layers of distant hills with parallax.
+    for (int layer = 0; layer < 2; layer++) {
+        float par = layer == 0 ? 0.15f : 0.35f;
+        Color col = layer == 0 ? mixC(th.hillFar, th.skyBottom, 0.25f) : th.hillNear;
+        float z = g.camera.zoom;
+        float baseY = sh / 2.0f + ((Terrain::WATER_Y - (layer == 0 ? 330 : 190)) - camY) * z * (0.35f + par);
+        float amp = layer == 0 ? 150 : 110;
+        for (int x = 0; x < sw; x += 4) {
+            float wx = (x - sw / 2.0f) + camX * par;
+            float h = sinf(wx * 0.0021f + layer * 3) * 0.5f + sinf(wx * 0.0057f + 1.3f + layer) * 0.3f +
+                      sinf(wx * 0.013f + layer * 7) * 0.12f;
+            // Mountain peaks on the far layer, softer rolling hills up close.
+            if (layer == 0) h = fabsf(h) * 1.4f - 0.2f;
+            float top = baseY - h * amp;
+            if (top < sh) DrawRectangle(x, (int)top, 4, sh - (int)top, col);
         }
     }
 }
 
-// Draw an upward-pointing arrow that bounces above the active worm, so the
-// player can see at a glance whose turn it is.
-static void drawTurnArrow(const Vector2& screenPos) {
-    float bounce = sinf(GetTime() * 6.0f) * 8.0f;
-    float baseY = screenPos.y - 46 - bounce;
-    float alpha = 200 + 55 * (0.5f + 0.5f * sinf(GetTime() * 3.0f));
-    Color c = (Color){ 255, 244, 150, (unsigned char)alpha };
-    // Upward triangle (apex at top).
-    Vector2 apex = (Vector2){ screenPos.x, baseY - 12 };
-    Vector2 bl = (Vector2){ screenPos.x - 8, baseY + 2 };
-    Vector2 br = (Vector2){ screenPos.x + 8, baseY + 2 };
-    DrawTriangle(apex, bl, br, c);
-    // Short stem.
-    DrawLineEx((Vector2){ screenPos.x, baseY + 2 },
-               (Vector2){ screenPos.x, baseY + 12 }, 3.0f, c);
-}
+// ---- Sea (world space, inside BeginMode2D) ----
 
-void render(const GameCamera& camera, const ChunkGrid& chunks, 
-            const std::vector<Entities::Worm*>& worms,
-            const std::vector<Entities::Explosion>& explosions,
-            const std::vector<Entities::Projectile>& projectiles,
-            int screenWidth, int screenHeight,
-            const Entities::Worm* currentWorm, bool debugMode, bool matchRunning) {
-    (void)screenWidth; (void)screenHeight;
-
-    // Sky backdrop (replaces the old flat DARKGRAY clear).
-    drawSky(screenWidth, screenHeight);
-
-    // Draw terrain chunks, filled in material colour.
-    for (const auto& row : chunks) {
-        for (auto* chunk : row) {
-            if (!chunk || chunk->state == Terrain::ChunkState::GONE) continue;
-            drawTerrainChunk(chunk, camera, screenWidth, screenHeight, debugMode);
-        }
-    }
-
-    // Draw worms
-    for (auto* worm : worms) {
-        if (!worm || !worm->isAlive()) continue;
-
-        Vector2 pos = worm->getPosition();
-        Vector2 screenPos = camera.worldToScreen((Vector2){pos.x * Terrain::PPM, pos.y * Terrain::PPM});
-
-        Color body = parseHexColor(worm->color);
-
-        // Draw worm body (ellipse). The radii must match the physics box built
-        // in Worm::init(): that body is 1.0m wide x 2.0m tall, i.e. 32px x 64px
-        // at Terrain::PPM (half = 16px x 32px). Drawing a smaller ellipse here
-        // left the visible bottom ~24px above the feet that actually rest on the
-        // ground, so the worm looked like it was hovering.
-        DrawEllipse(screenPos.x, screenPos.y, 16, 32, ColorAlpha(body, 0.95f));
-        DrawEllipseLines(screenPos.x, screenPos.y, 16, 32, ColorAlpha((Color){0,0,0,120}, 1));
-
-        // Eyes sit on the side it faces (facing is +1 right / -1 left).
-        float ex = screenPos.x + (float)worm->facing * 6;
-        float ey = screenPos.y - 10;
-        DrawCircle(ex - 3, ey, 3, WHITE);
-        DrawCircle(ex + 3, ey, 3, WHITE);
-        DrawCircle(ex - 3 + worm->facing, ey, 1.5f, BLACK);
-        DrawCircle(ex + 3 + worm->facing, ey, 1.5f, BLACK);
-
-        // Turn marker: a bouncing arrow above the active worm, drawn only
-        // while the match is actually running (not at game over / menu).
-        if (matchRunning && currentWorm == worm) {
-            drawTurnArrow(screenPos);
-        }
-
-        // Draw health bar + HP number.
-        float hpPercent = worm->hp / worm->maxHp;
-        int barWidth = 28;
-        int barHeight = 5;
-        int barX = (int)screenPos.x - barWidth/2;
-        int barY = (int)screenPos.y - 44;
-
-        DrawRectangle(barX, barY, barWidth, barHeight, (Color){0,0,0,160});
-        DrawRectangle(barX + 1, barY + 1, barWidth - 2, barHeight - 2,
-                      hpPercent > 0.5f ? GREEN : (hpPercent > 0.25f ? YELLOW : RED));
-
-        char hpText[16];
-        snprintf(hpText, sizeof(hpText), "%d/%d", (int)worm->hp, (int)worm->maxHp);
-        int textWidth = MeasureText(hpText, 10);
-        DrawText(hpText, (int)screenPos.x - textWidth/2, barY - 12, 10, WHITE);
-    }
-
-    // Draw projectiles in flight: a small dense shell with a dark rim so it
-    // reads against both the sky and the terrain, coloured by type.
-    for (const auto& p : projectiles) {
-        if (!p.isAlive()) continue;
-        Vector2 screenPos = camera.worldToScreen((Vector2){p.drawX, p.drawY});
-        Color c = (p.type == Entities::ProjectileType::Bazooka) ? GOLD : (Color){120, 120, 140, 255};
-        DrawCircle(screenPos.x, screenPos.y, 5.0f, c);
-        DrawCircleLines(screenPos.x, screenPos.y, 5.0f, (Color){40, 40, 40, 200});
-    }
-
-    // Draw explosions: a filled flash that fades out at the real blast radius.
-    for (const auto& exp : explosions) {
-        if (!exp.isAlive()) continue;
-
-        Vector2 screenPos = camera.worldToScreen((Vector2){exp.x, exp.y});
-        float alpha = 1.0f - exp.age / exp.maxAge;
-
-        // Outer warm flash, fully opaque core fading to transparent at the edge.
-        Color core = ORANGE;
-        core.a = (unsigned char)(255 * alpha);
-        DrawCircle(screenPos.x, screenPos.y, exp.radius, core);
-
-        // Bright inner flash (near-white while hot).
-        Color inner = (Color){ 255, 244, 190, (unsigned char)(255 * alpha) };
-        DrawCircle(screenPos.x, screenPos.y, exp.radius * 0.55f, inner);
+void drawWater(const Game& g, float yBase, Color top, Color bottom, float alpha, float amp, float phase,
+               float t) {
+    Vector2 tl = g.camera.screenToWorld({0, 0});
+    Vector2 br = g.camera.screenToWorld({(float)GetScreenWidth(), (float)GetScreenHeight()});
+    float bottomY = std::max(br.y, yBase + 40) + 20;
+    const float step = 6;
+    for (float x = floorf(tl.x / step) * step - step; x < br.x + step; x += step) {
+        float y = yBase + sinf(x * 0.018f + t * 1.6f + phase) * amp + sinf(x * 0.041f - t * 2.3f + phase) * amp * 0.45f;
+        DrawRectangleGradientV((int)x, (int)y, (int)step, (int)(bottomY - y), withAlpha(top, alpha),
+                               withAlpha(bottom, alpha));
+        DrawRectangle((int)x, (int)y, (int)step, 2, withAlpha(mixC(top, WHITE, 0.5f), alpha));
     }
 }
 
-void renderHUD(const HUDState& state) {
-    // Weapon name
-    DrawText(state.weapon.c_str(), 20, 20, 20, WHITE);
-    
-    // Charge level
-    if (state.chargeLevel > 0) {
-        int barWidth = 100;
-        int barHeight = 10;
-        DrawRectangle(20, 50, barWidth, barHeight, DARKGRAY);
-        DrawRectangle(20, 50, (int)(barWidth * state.chargeLevel), barHeight, YELLOW);
+// ---- Weather (screen space) ----
+
+struct Flake { float x, y, s, spin, rot; bool init = false; };
+Flake flakes[110];
+
+void drawWeather(const Game& g, int sw, int sh, float dt) {
+    const Theme& th = *g.theme;
+    for (int i = 0; i < 110; i++) {
+        Flake& f = flakes[i];
+        if (!f.init) {
+            f = {(float)GetRandomValue(0, sw), (float)GetRandomValue(0, sh), 0.6f + GetRandomValue(0, 100) / 100.0f,
+                 (float)GetRandomValue(-300, 300) / 100.0f, 0, true};
+        }
+        float windPush = g.wind * 160.0f;
+        float vy = 0, vx = windPush * f.s;
+        switch (th.weather) {
+            case Weather::Leaves: vy = 38 * f.s; vx += sinf(f.rot) * 20; break;
+            case Weather::Snow:   vy = 45 * f.s; vx += sinf(f.rot * 0.7f) * 12; break;
+            case Weather::Dust:   vy = 8 * f.s;  vx = windPush * 2.2f * f.s + 30 * (g.wind >= 0 ? 1 : -1); break;
+            case Weather::Embers: vy = -40 * f.s; vx += sinf(f.rot) * 15; break;
+        }
+        f.x += vx * dt;
+        f.y += vy * dt;
+        f.rot += f.spin * dt;
+        if (f.x < -20) f.x += sw + 40;
+        if (f.x > sw + 20) f.x -= sw + 40;
+        if (f.y > sh + 20) f.y -= sh + 40;
+        if (f.y < -20) f.y += sh + 40;
+
+        switch (th.weather) {
+            case Weather::Leaves: {
+                Color c = i % 3 == 0 ? Color{200, 70, 30, 220} : (i % 3 == 1 ? th.weatherColor : Color{170, 150, 40, 220});
+                float w = 4.5f * f.s, h = 2.2f * f.s * (0.4f + 0.6f * fabsf(cosf(f.rot)));
+                DrawEllipse((int)f.x, (int)f.y, w, h, c);
+                break;
+            }
+            case Weather::Snow:
+                DrawCircleV({f.x, f.y}, 1.2f + f.s * 1.3f, withAlpha(WHITE, 0.85f));
+                break;
+            case Weather::Dust:
+                DrawRectangle((int)f.x, (int)f.y, (int)(3 * f.s + 1), 1, withAlpha(th.weatherColor, 0.5f));
+                break;
+            case Weather::Embers: {
+                float flick = 0.5f + 0.5f * sinf(f.rot * 5);
+                DrawCircleV({f.x, f.y}, 1.0f + f.s, withAlpha(th.weatherColor, 0.5f + 0.5f * flick));
+                break;
+            }
+        }
     }
-    
-    // Wind indicator
-    char windText[32];
-    snprintf(windText, sizeof(windText), "Wind: %.1f", state.wind);
-    DrawText(windText, 20, 70, 16, LIGHTGRAY);
-    
-    // Timer
-    char timerText[32];
-    snprintf(timerText, sizeof(timerText), "Time: %.0f", state.timer);
-    DrawText(timerText, GetScreenWidth() - 120, 20, 20, WHITE);
-    
-    // Debug info
-    if (state.debugMode) {
-        char debugText[128];
-        snprintf(debugText, sizeof(debugText), 
-                 "FPS: %d | Static: %d | Dynamic: %d",
-                 state.fps, state.staticBodies, state.dynamicBodies);
-        DrawText(debugText, 20, GetScreenHeight() - 40, 16, LIGHTGRAY);
+}
+
+// ---- Labels ----
+
+void drawWormLabels(const Game& g) {
+    for (auto* w : g.worms) {
+        if (!w->alive || w->drowned) continue;
+        Color team = g.teams[w->teamIndex].color;
+        Vector2 p = w->pixelPos();
+        Vector2 s = g.camera.worldToScreen({p.x, p.y - 22});
+        float size = 14;
+        char hp[16];
+        snprintf(hp, sizeof hp, "%d", (int)std::ceil(std::max(0.0f, w->shownHp)));
+        Vector2 hm = Text::measure(hp, size);
+        Vector2 nm = Text::measure(w->name.c_str(), size);
+        float y = s.y - hm.y - 4;
+        Rectangle hb{roundf(s.x - hm.x / 2 - 5), roundf(y), hm.x + 10, hm.y + 1};
+        DrawRectangleRounded(hb, 0.35f, 4, Color{12, 10, 16, 190});
+        Text::draw(hp, {hb.x + 5, hb.y + 1}, size, team);
+        Rectangle nb{roundf(s.x - nm.x / 2 - 5), roundf(y - nm.y - 3), nm.x + 10, nm.y + 1};
+        DrawRectangleRounded(nb, 0.35f, 4, Color{12, 10, 16, 190});
+        Text::draw(w->name.c_str(), {nb.x + 5, nb.y + 1}, size, team);
+
+        // Bouncing arrow over whoever's turn it is until they get going.
+        if (w == g.current && (g.phase == Phase::Intro || (g.phase == Phase::Aiming && g.phaseTime < 3.0f))) {
+            float b = fabsf(sinf(g.matchTime * 6)) * 8;
+            float ay = nb.y - 10 - b;
+            Vector2 a{s.x, ay + 10}, l{s.x - 9, ay - 2}, r{s.x + 9, ay - 2};
+            DrawTriangle(l, a, r, Color{20, 10, 10, 220});
+            DrawTriangle({l.x + 2.5f, l.y + 1.5f}, {a.x, a.y - 3}, {r.x - 2.5f, r.y + 1.5f}, team);
+        }
     }
+}
+
+} // namespace
+
+void renderWorld(Game& g) {
+    gCam = &g.camera;
+    int sw = GetScreenWidth(), sh = GetScreenHeight();
+    float t = g.matchTime;
+    const Theme& th = *g.theme;
+
+    drawSky(g, sw, sh, t);
+
+    BeginMode2D(g.camera.camera2D());
+
+    // Far swell of the sea, behind the land.
+    drawWater(g, Terrain::WATER_Y - 14, mixC(th.waterTop, th.waterDeep, 0.35f), th.waterDeep, 1.0f, 3.0f, 1.7f, t);
+
+    g.terrainGfx.drawStatic();
+    g.terrainGfx.drawLoose(*g.terrain);
+
+    for (auto& p : g.props) {
+        Color gc = p.contents >= 0 && p.contents < (int)g.teams.size() ? g.teams[p.contents].color : GRAY;
+        Sprites::drawProp(p, t, gc);
+    }
+
+    // Ninja rope: hook, pivots, and the line down to the worm.
+    if (g.rope.state != NinjaRope::State::Idle && g.current) {
+        Vector2 w = g.current->pixelPos();
+        std::vector<Vector2> pts;
+        if (g.rope.state == NinjaRope::State::Shooting) {
+            pts = {{w.x + g.rope.dir.x * g.rope.shot, w.y + g.rope.dir.y * g.rope.shot}};
+        } else {
+            pts = g.rope.pivots;
+        }
+        // The rope ends at the worm's head (the sprite hangs rotated by spin).
+        float sp = g.current->spin;
+        pts.push_back({w.x + 11.0f * sinf(sp), w.y - 11.0f * cosf(sp)});
+        for (size_t i = 0; i + 1 < pts.size(); i++) {
+            DrawLineEx(pts[i], pts[i + 1], 3.2f, Color{60, 40, 24, 255});
+            DrawLineEx(pts[i], pts[i + 1], 1.6f, Color{190, 150, 90, 255});
+        }
+        for (size_t i = 1; i + 1 < pts.size(); i++) DrawCircleV(pts[i], 2.0f, Color{60, 40, 24, 255});
+        // The hook: a little grey grapnel at the far end.
+        Vector2 h = pts[0];
+        Vector2 d = pts.size() > 1 ? Vector2{pts[1].x - h.x, pts[1].y - h.y} : Vector2{0, 1};
+        float dl = sqrtf(d.x * d.x + d.y * d.y);
+        if (dl > 0.01f) { d.x /= dl; d.y /= dl; }
+        Vector2 n{-d.y, d.x};
+        Color steel{150, 156, 170, 255};
+        DrawLineEx({h.x - n.x * 4, h.y - n.y * 4}, {h.x + n.x * 4, h.y + n.y * 4}, 2.2f, steel);
+        DrawLineEx({h.x - n.x * 4, h.y - n.y * 4}, {h.x - n.x * 5 + d.x * 3, h.y - n.y * 5 + d.y * 3}, 2.0f, steel);
+        DrawLineEx({h.x + n.x * 4, h.y + n.y * 4}, {h.x + n.x * 5 + d.x * 3, h.y + n.y * 5 + d.y * 3}, 2.0f, steel);
+        DrawCircleV(h, 2.2f, Color{90, 94, 104, 255});
+    }
+
+    const WeaponInfo& info = weaponInfo(g.weapon);
+    bool sheepOut = false;
+    for (auto& p : g.projectiles) if (p.type == Entities::ProjectileType::Sheep) sheepOut = true;
+    for (auto* w : g.worms) {
+        if (!w->alive) continue;
+        Sprites::WormPose pose{};
+        pose.time = t + w->teamIndex * 0.37f;
+        pose.teamColor = g.teams[w->teamIndex].color;
+        bool roped = w == g.current && g.rope.state == NinjaRope::State::Attached;
+        bool active = w == g.current && g.phase == Phase::Aiming && g.shotsLeft > 0 && !sheepOut &&
+                      w->canAct() && (w->grounded || roped) && !w->flying;
+        pose.onRope = roped;
+        pose.active = w == g.current && (g.phase == Phase::Aiming || g.phase == Phase::Retreat);
+        // Weapons are put away while walking so the inch-worm shuffle shows.
+        Vector2 v = w->getVelocity();
+        bool walking = w->grounded && fabsf(v.x) > 0.3f && !g.charging;
+        pose.holding = active && !walking && info.mode != FireMode::Skip && info.mode != FireMode::Targeted &&
+                       !(roped && info.mode == FireMode::Rope);
+        pose.weapon = g.weapon;
+        pose.showAim = active && !walking && info.aims && !g.panelOpen && !(roped && info.mode == FireMode::Rope) &&
+                       g.rope.state != NinjaRope::State::Shooting;
+        pose.power = g.charging ? g.power : 0;
+        Sprites::drawWorm(*w, pose);
+    }
+
+    for (auto& p : g.projectiles) Sprites::drawProjectile(p, t);
+    if (g.planeX > -1e8f) Sprites::drawPlane({g.planeX, g.planeY}, g.planeDir, t);
+
+    g.fx.drawWorld();
+
+    // Near waves, in front of everything.
+    drawWater(g, Terrain::WATER_Y, th.waterTop, th.waterDeep, 0.78f, 4.0f, 0.0f, t);
+    drawWater(g, Terrain::WATER_Y + 12, mixC(th.waterTop, th.waterDeep, 0.3f), th.waterDeep, 0.85f, 3.0f, 2.9f, t);
+
+    // Targeting cursor for air strikes / teleport.
+    if (g.isTargeting()) {
+        Vector2 m = g.mouseWorld;
+        float pulse = 1 + 0.15f * sinf(t * 8);
+        if (g.weapon == WeaponId::AirStrike) {
+            DrawRing(m, 12 * pulse, 15 * pulse, 0, 360, 32, Color{255, 40, 40, 230});
+            DrawLineEx({m.x - 22, m.y}, {m.x + 22, m.y}, 2, Color{255, 40, 40, 230});
+            DrawLineEx({m.x, m.y - 22}, {m.x, m.y + 22}, 2, Color{255, 40, 40, 230});
+            float d = (float)(g.current ? g.current->facing : 1);
+            for (int k = 0; k < 3; k++) {
+                float ax = m.x - d * (60 - k * 14);
+                DrawTriangle({ax, m.y - 70}, {ax + d * 10, m.y - 62}, {ax, m.y - 54}, Color{255, 255, 255, 200});
+            }
+        } else {
+            DrawEllipseLines((int)m.x, (int)m.y, 10 * pulse, 15 * pulse, Color{140, 220, 255, 255});
+            DrawEllipseLines((int)m.x, (int)m.y, 12 * pulse, 17 * pulse, Color{140, 220, 255, 140});
+        }
+    }
+
+    EndMode2D();
+
+    drawWeather(g, sw, sh, GetFrameTime());
+    drawWormLabels(g);
+    g.fx.drawText(toScreen, g.camera.zoom);
 }
