@@ -47,6 +47,14 @@ struct Chunk {
     Material material;
     float hp;
     ChunkState state;
+    // Set once a falling slab has come to rest and been converted into static
+    // terrain at where it landed (see TerrainSystem::freezeBody). Landed chunks
+    // are SOLID with a static body, but they no longer sit in their grid cell,
+    // so support.cpp treats them as empty rubble excluded from the flood-fill
+    // (they never thaw again and can't prop up their old neighbours). Their
+    // `verts`/`centroid` are rebaked to the landed position so the renderer and
+    // explosions see them where they actually are.
+    bool landed = false;
     void* body = nullptr;
     void* fixture = nullptr;
     // For a thawed dynamic slab these are kept fresh so the renderer can draw

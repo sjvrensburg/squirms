@@ -15,6 +15,11 @@ static std::set<int> floodGrounded(const std::vector<std::vector<Chunk*>>& chunk
         for (int y = 0; y < ROWS; y++) {
             Chunk* c = chunks[y][x];
             if (c->state != ChunkState::SOLID) continue;
+            // A landed chunk (a slab that fell and froze elsewhere) is no
+            // longer in its grid cell, so it is excluded from the support
+            // graph entirely: treated as empty. It is never counted as
+            // unsupported (it can't thaw again) and never seeds the flood.
+            if (c->landed) continue;
             if (c->material != Material::Bedrock && y != ROWS - 1) continue;
             if (grounded.insert(c->id).second) {
                 q.push({x, y});
@@ -30,6 +35,9 @@ static std::set<int> floodGrounded(const std::vector<std::vector<Chunk*>>& chunk
             if (nx < 0 || nx >= COLS || ny < 0 || ny >= ROWS) continue;
             Chunk* n = chunks[ny][nx];
             if (n->state != ChunkState::SOLID) continue;
+            // Landed rubble sits outside its old cell, so it neither counts as
+            // grounded nor props up its neighbours -- skip it like an empty cell.
+            if (n->landed) continue;
             if (!grounded.insert(n->id).second) continue;
             q.push({nx, ny});
         }
@@ -49,6 +57,9 @@ std::vector<std::vector<Chunk*>> clusterUnsupported(const std::vector<std::vecto
         for (int x = 0; x < COLS; x++) {
             Chunk* start = chunks[y][x];
             if (start->state != ChunkState::SOLID) continue;
+            // Landed chunks are excluded from the support graph, so they can
+            // never surface as an unsupported component to be re-thawed.
+            if (start->landed) continue;
             if (grounded.count(start->id)) continue;
             if (visited.count(start->id)) continue;
 
@@ -66,6 +77,9 @@ std::vector<std::vector<Chunk*>> clusterUnsupported(const std::vector<std::vecto
                     if (nx < 0 || nx >= COLS || ny < 0 || ny >= ROWS) continue;
                     Chunk* n = chunks[ny][nx];
                     if (n->state != ChunkState::SOLID) continue;
+                    // Skip landed rubble: it isn't touching this cluster any
+                    // more, so it can't keep the cluster grounded.
+                    if (n->landed) continue;
                     if (grounded.count(n->id)) continue;
                     if (visited.count(n->id)) continue;
                     visited.insert(n->id);

@@ -216,6 +216,16 @@ Vector2 World::getBodyVelocity(void* body) {
     return Vector2{v.x, v.y};
 }
 
+float World::getBodyAngularVelocity(void* body) {
+    b2Body* b = static_cast<b2Body*>(body);
+    return b->GetAngularVelocity();
+}
+
+bool World::isBodyAsleep(void* body) {
+    b2Body* b = static_cast<b2Body*>(body);
+    return !b->IsAwake();
+}
+
 float World::getBodyMass(void* body) {
     b2Body* b = static_cast<b2Body*>(body);
     return b->GetMass();

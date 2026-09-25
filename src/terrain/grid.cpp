@@ -34,7 +34,7 @@ GridData buildGrid(const std::vector<std::vector<bool>>& solid, const std::vecto
                 Material mat = material[row][col];
                 data.chunks[row][col] = new Chunk{
                     row * COLS + col, col, row, {}, 0, 0,
-                    mat, getMaterialProps(mat).hp, ChunkState::GONE, nullptr, nullptr
+                    mat, getMaterialProps(mat).hp, ChunkState::GONE, false, nullptr, nullptr
                 };
                 continue;
             }
@@ -48,7 +48,7 @@ GridData buildGrid(const std::vector<std::vector<bool>>& solid, const std::vecto
             Material mat = material[row][col];
             data.chunks[row][col] = new Chunk{
                 row * COLS + col, col, row, verts, cx, cy,
-                mat, getMaterialProps(mat).hp, ChunkState::SOLID, nullptr, nullptr
+                mat, getMaterialProps(mat).hp, ChunkState::SOLID, false, nullptr, nullptr
             };
         }
     }

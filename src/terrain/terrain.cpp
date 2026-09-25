@@ -204,19 +204,95 @@ void TerrainSystem::update(float dt) {
 void TerrainSystem::tryRefreeze() {
     std::vector<void*> toFreeze;
     for (auto* body : dynamicBodies) {
-        // In a real implementation, check if body is awake
-        toFreeze.push_back(body);
+        // A resting body (asleep, or slow for a full refreeze interval) becomes
+        // static terrain where it landed. A body still falling/sliding is left
+        // to keep falling.
+        if (world->isBodyAsleep(body)) {
+            toFreeze.push_back(body);
+            restFrames.erase(body);
+            continue;
+        }
+        if (isBodySlow(body)) {
+            // Freeze only once it has read slow on the previous tick too, so a
+            // momentary near-stop at a bounce apex can't trap it mid-air.
+            if (restFrames.count(body)) toFreeze.push_back(body);
+            restFrames[body]++;
+        } else {
+            restFrames.erase(body);
+        }
     }
     for (auto* body : toFreeze) {
+        restFrames.erase(body);
         freezeBody(body);
     }
 }
 
+// A body is "slow" when both its linear and angular speed have fallen below
+// small thresholds. This is the fallback for bodies Box2D never puts to sleep
+// (e.g. a very light slab); asleep is the primary resting signal.
+bool TerrainSystem::isBodySlow(void* body) {
+    Vector2 v = world->getBodyVelocity(body);
+    float speed = sqrtf(v.x * v.x + v.y * v.y);
+    float angVel = fabsf(world->getBodyAngularVelocity(body));
+    return speed < REFREEZE_SPEED_THRESH && angVel < REFREEZE_ANG_THRESH;
+}
+
+// Turn a resting dynamic slab into static terrain at exactly where it landed:
+// destroy the shared dynamic body, rebake every chunk's vertices into its
+// current world position (the slab may have rotated while falling), and give
+// each chunk a fresh static body + fixture at that position. The chunks are
+// marked landed/SOLID so support.cpp treats them as permanent ground and the
+// renderer draws them from their new pixel verts.
 void TerrainSystem::freezeBody(void* body) {
     dynamicBodies.erase(body);
     std::vector<Chunk*> chunkList = getChunksForBody(body);
+    if (chunkList.empty()) return;
+
+    // Destroy the shared dynamic body once (outside step()/a callback -- this
+    // runs in update(), after world->step()).
+    world->destroyBody(body);
+    for (auto* c : chunkList) c->body = nullptr;
+
+    // Current resting transform of the slab in Box2D's Y-up metre space.
+    Vector2 bp = world->getBodyPosition(body);
+    float angle = world->getBodyAngle(body);
+    float ca = cosf(angle), sa = sinf(angle);
+
     for (auto* c : chunkList) {
+        // The chunk's verts are still in original pixel space; transform each
+        // one by the body's current position + rotation to find where it is
+        // now. Local metres relative to the slab origin match how the dynamic
+        // fixture was built, so rotating by the body angle reproduces the
+        // current world position.
+        std::vector<std::pair<float, float>> newVerts;
+        float sx = 0, sy = 0;
+        for (auto& v : c->verts) {
+            float lx = (v.first - c->bodyOriginX) / PPM;
+            float ly = -(v.second - c->bodyOriginY) / PPM;
+            float wx = ca * lx - sa * ly + bp.x;
+            float wy = sa * lx + ca * ly + bp.y;
+            // Box2D metres (Y-up) back to pixel space (Y-down).
+            float px = wx * PPM;
+            float py = (WORLD_H - wy) * PPM;
+            newVerts.push_back({px, py});
+            sx += px; sy += py;
+        }
+        float ncx = sx / newVerts.size();
+        float ncy = sy / newVerts.size();
+        c->verts = std::move(newVerts);
+        c->centroidX = ncx; c->centroidY = ncy;
+        c->bodyOriginX = ncx; c->bodyOriginY = ncy;
+        c->bodyDrawX = ncx; c->bodyDrawY = ncy;
+        c->bodyAngle = 0;
+        c->landed = true;
         c->state = ChunkState::SOLID;
+    }
+
+    // Each chunk gets its own static body at its landed centroid. createFixture
+    // builds the fixture with verts local to that centroid (Box2D vertices are
+    // body-relative, Y-flipped), matching the CLAUDE.md conventions.
+    for (auto* c : chunkList) {
+        createFixture(c);
     }
 }
 

@@ -52,6 +52,8 @@ public:
     // the pixel convention used everywhere else.
     Vector2 getBodyPosition(void* body);
     Vector2 getBodyVelocity(void* body);
+    float getBodyAngularVelocity(void* body);
+    bool isBodyAsleep(void* body);
     float getBodyMass(void* body);
     float getBodyAngle(void* body);
     void setBodyVelocity(void* body, float vx, float vy);
