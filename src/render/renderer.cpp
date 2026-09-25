@@ -47,14 +47,15 @@ void render(const GameCamera& camera, const ChunkGrid& chunks,
                 // pixel space -- the same convention projectile.cpp uses.
                 float angle = chunk->bodyAngle;
                 float cxM = chunk->bodyDrawX / Terrain::PPM;
-                float cyM = (Terrain::WORLD_H - chunk->bodyDrawY) / Terrain::PPM;
+                // bodyDrawY is already pixel space, so un-flip to Box2D metres once here.
+                float cyM = Terrain::WORLD_H - chunk->bodyDrawY / Terrain::PPM;
                 for (auto& v : chunk->verts) {
                     float lx = (v.first - chunk->bodyOriginX) / Terrain::PPM;
                     float ly = -(v.second - chunk->bodyOriginY) / Terrain::PPM;
                     float rx = lx * cosf(angle) - ly * sinf(angle);
                     float ry = lx * sinf(angle) + ly * cosf(angle);
                     float px = (cxM + rx) * Terrain::PPM;
-                    float py = Terrain::WORLD_H - (cyM + ry) * Terrain::PPM;
+                    float py = (Terrain::WORLD_H - (cyM + ry)) * Terrain::PPM;
                     screenVerts.push_back(camera.worldToScreen((Vector2){px, py}));
                 }
             } else {

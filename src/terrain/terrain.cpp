@@ -181,7 +181,8 @@ void TerrainSystem::syncDynamicChunkPositions() {
             // Un-flip Box2D's Y-up metres back to pixel space, matching
             // Worm::getPosition() / projectile.cpp.
             c->bodyDrawX = bp.x * PPM;
-            c->bodyDrawY = WORLD_H - bp.y * PPM;
+            // Un-flip Box2D's Y-up metres back to pixel space: (WORLD_H - bodyY) * PPM.
+            c->bodyDrawY = (WORLD_H - bp.y) * PPM;
             c->bodyAngle = world->getBodyAngle(c->body);
         }
     }
