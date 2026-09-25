@@ -248,15 +248,17 @@ void TerrainSystem::freezeBody(void* body) {
     std::vector<Chunk*> chunkList = getChunksForBody(body);
     if (chunkList.empty()) return;
 
-    // Destroy the shared dynamic body once (outside step()/a callback -- this
-    // runs in update(), after world->step()).
-    world->destroyBody(body);
-    for (auto* c : chunkList) c->body = nullptr;
-
-    // Current resting transform of the slab in Box2D's Y-up metre space.
+    // Capture the resting transform *before* destroying the body: destroyBody
+    // returns the b2Body* to Box2D's block allocator, so reading it afterwards
+    // would be a use-after-free. This runs in update(), after world->step(),
+    // so creating the static bodies below is outside any callback/step.
     Vector2 bp = world->getBodyPosition(body);
     float angle = world->getBodyAngle(body);
     float ca = cosf(angle), sa = sinf(angle);
+
+    // Destroy the shared dynamic body once.
+    world->destroyBody(body);
+    for (auto* c : chunkList) c->body = nullptr;
 
     for (auto* c : chunkList) {
         // The chunk's verts are still in original pixel space; transform each
