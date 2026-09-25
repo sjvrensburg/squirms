@@ -384,16 +384,15 @@ static void drawGameResult() {
 void renderFrame(float dt) {
     if (!state) return;
     
-    // Clear background
-    ClearBackground(DARKGRAY);
-    
-    // Render terrain and game objects
+    // Render terrain and game objects (render() draws the sky backdrop).
     render(state->camera, 
            state->terrain ? state->terrain->chunks : std::vector<std::vector<Terrain::Chunk*>>{},
            flattenWorms(),
            state->explosions,
            state->projectiles,
-           GetScreenWidth(), GetScreenHeight());
+           GetScreenWidth(), GetScreenHeight(),
+           state->turn.getCurrentWorm(), debugMode,
+           state->turn.state == TurnState::PLAYING);
     
     // Render HUD
     renderHUD({

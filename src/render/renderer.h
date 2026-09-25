@@ -13,7 +13,8 @@ void render(const GameCamera& camera, const ChunkGrid& chunks,
             const std::vector<Entities::Worm*>& worms,
             const std::vector<Entities::Explosion>& explosions,
             const std::vector<Entities::Projectile>& projectiles,
-            int screenWidth, int screenHeight);
+            int screenWidth, int screenHeight,
+            const Entities::Worm* currentWorm, bool debugMode, bool matchRunning);
 
 struct HUDState {
     std::vector<Entities::Worm*> worms;
