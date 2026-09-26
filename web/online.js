@@ -21,7 +21,8 @@
     if (dc?.readyState === 'open' && dc.bufferedAmount < 65536) dc.send(JSON.stringify(message));
   }
   function controlsEnabled() {
-    return session?.role === 2 && session.live && session.state?.team === 1 && !lobby.open && !document.hidden;
+    return session?.role === 2 && session.live && session.state?.team === 1 &&
+      !lobby.open && !document.hidden && !uiTarget(document.activeElement);
   }
   function sendInput() {
     if (session?.role !== 2) return;
@@ -32,8 +33,16 @@
   }
   const uiTarget = target => target instanceof Element && !!target.closest('button,input,dialog,#audio-panel');
   function blockUI() {
-    if (loaded) Module._squirms_ui(lobby.open || (session && !session.started) || uiTarget(document.activeElement) ? 1 : 0);
+    const blocked = lobby.open || (session && !session.started) || uiTarget(document.activeElement);
+    if (blocked) { clearInput(); sendInput(); }
+    if (loaded) Module._squirms_ui(blocked ? 1 : 0);
   }
+  // Installed before GLFW's window capture listeners. Keep UI presses and
+  // characters out of the game without cancelling native editing or focus.
+  // Let keyup reach GLFW so local keys held before entering the UI can release.
+  for (const type of ['keydown', 'keypress']) window.addEventListener(type, event => {
+    if (lobby.open || uiTarget(event.target)) event.stopImmediatePropagation();
+  }, true);
   function focusGame() { (session?.role === 2 && session.started ? video : canvas).focus(); blockUI(); }
   function openLobby() { clearInput(); lobby.showModal(); blockUI(); }
   $('online-open').onclick = openLobby;
@@ -263,10 +272,13 @@
     y = Math.max(0, Math.min(1, (event.clientY - rect.top - (rect.height - height) / 2) / height));
   }
   for (const type of ['keydown', 'keyup']) window.addEventListener(type, event => {
-    if (session?.role !== 2 || uiTarget(event.target) || lobby.open) return;
+    if (session?.role !== 2) return;
     const bit = keyBits.get(event.code);
     if (bit === undefined) return;
-    event.preventDefault(); event.stopImmediatePropagation();
+    const inUI = uiTarget(event.target) || lobby.open;
+    if (inUI && type === 'keydown') return;
+    // Releases still update guest state when focus moved after keydown.
+    if (!inUI) { event.preventDefault(); event.stopImmediatePropagation(); }
     if (type === 'keydown') {
       if (!heldCodes.has(event.code)) pressed |= 1 << bit;
       heldCodes.add(event.code);

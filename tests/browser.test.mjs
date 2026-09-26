@@ -84,6 +84,39 @@ async function chrome(t, width = 1280, height = 800) {
   return { call, evaluate, key, mouse, screenshot, load, errors };
 }
 
+test('HTML controls retain native Backspace and Tab behavior', { timeout: 60000 }, async t => {
+  const server = createServer({ iceServers: [] });
+  await new Promise(resolve => server.listen(0, '127.0.0.1', resolve));
+  t.after(() => server.close());
+  const page = await chrome(t);
+  await page.load(`http://127.0.0.1:${server.address().port}/`);
+  await page.evaluate(`document.getElementById('online-open').click();
+    const room=document.getElementById('room'); room.value='abc'; room.focus(); room.setSelectionRange(3,3);`);
+  // Use trusted CDP events for native editing/focus defaults. Untrusted DOM
+  // events cannot delete text or move focus even when preventDefault is absent.
+  const nativeKey = async (key, code, keyCode, modifiers = 0) => {
+    for (const type of ['keyDown', 'keyUp'])
+      await page.call('Input.dispatchKeyEvent', { type, key, code, windowsVirtualKeyCode: keyCode, modifiers });
+  };
+  await nativeKey('Backspace', 'Backspace', 8);
+  assert.equal(await page.evaluate(`document.getElementById('room').value`), 'ab');
+  await nativeKey('Tab', 'Tab', 9);
+  assert.equal(await page.evaluate('document.activeElement.id'), 'join');
+  await nativeKey('Tab', 'Tab', 9, 8); // Shift+Tab
+  assert.equal(await page.evaluate('document.activeElement.id'), 'room');
+  // Printable UI characters must not reach GLFW's menu seed character queue.
+  assert.equal(await page.evaluate(`(() => {
+    let reachedGame=false;
+    const listener=()=>{reachedGame=true;};
+    window.addEventListener('keypress',listener,true);
+    const event=new KeyboardEvent('keypress',{key:'4',charCode:52,keyCode:52,bubbles:true,cancelable:true});
+    document.activeElement.dispatchEvent(event);
+    window.removeEventListener('keypress',listener,true);
+    return !reachedGame && !event.defaultPrevented;
+  })()`), true);
+  assert.deepEqual(page.errors, []);
+});
+
 test('two browsers connect, stream video, enforce turns, play audio, fire and handle disconnect', { timeout: 180000 }, async t => {
   const server = createServer({ iceServers: [] });
   await new Promise(resolve => server.listen(0, '127.0.0.1', resolve));
@@ -118,6 +151,28 @@ test('two browsers connect, stream video, enforce turns, play audio, fire and ha
   const fireCount = await host.evaluate('window.sounds.filter(s=>s[0]===2).length');
   await host.key('Space', 32, 350);
   assert.equal(await host.evaluate('window.sounds.filter(s=>s[0]===2).length'), fireCount);
+  // Record actual incoming controls on the host, including heartbeat packets.
+  await host.evaluate(`window.receivedInputs=[]; const oldInput=Module._squirms_input;
+    Module._squirms_input=(...args)=>{window.receivedInputs.push(args); oldInput(...args);};`);
+  await guest.evaluate(`document.activeElement.dispatchEvent(new KeyboardEvent('keydown',
+    {key:'ArrowRight',code:'ArrowRight',keyCode:39,bubbles:true,cancelable:true}));`);
+  await until(() => host.evaluate('window.receivedInputs.some(a=>(a[1]&2)!==0)'), 'guest walking input');
+  await host.evaluate('window.receivedInputs=[]');
+  await guest.evaluate(`const sound=document.getElementById('audio-open'); sound.focus(); sound.click();`);
+  await until(() => host.evaluate('window.receivedInputs.some(a=>a[1]===0)'), 'UI focus releases guest controls', 3000);
+  await guest.evaluate(`document.activeElement.dispatchEvent(new KeyboardEvent('keyup',
+    {key:'ArrowRight',code:'ArrowRight',keyCode:39,bubbles:true,cancelable:true}));`);
+  await host.evaluate('window.receivedInputs=[]');
+  await delay(350);
+  const neutral = await host.evaluate('window.receivedInputs');
+  assert.ok(neutral.length >= 2, 'heartbeats continue while editing UI');
+  assert.ok(neutral.every(a => a.slice(1,5).every(value => value === 0)), 'UI heartbeats stay neutral');
+  await guest.evaluate(`document.getElementById('audio-open').click();`);
+  assert.equal(await guest.evaluate('document.activeElement.id'), 'remote');
+  await host.evaluate('window.receivedInputs=[]');
+  await delay(250);
+  assert.ok(await host.evaluate('window.receivedInputs.length>0 && window.receivedInputs.every(a=>a[1]===0)'),
+    'returning to the game does not restore a released key');
   // Guest opens the weapon panel and selects grenade using letterboxed coordinates.
   await guest.key('Tab', 9);
   const dims = await host.evaluate('({w:innerWidth,h:innerHeight})');
