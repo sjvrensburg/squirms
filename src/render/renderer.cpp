@@ -54,12 +54,21 @@ void drawSky(const Game& g, int sw, int sh, float t) {
         case Weather::Snow:   disc = {236, 240, 255, 255}; glow = {200, 210, 255, 40}; r = 26; break;
         default:              disc = {230, 70, 40, 255}; glow = {255, 60, 20, 60}; r = 44; break;
     }
-    for (int i = 4; i >= 1; i--) DrawCircleV(sun, r * (1 + i * 0.45f), withAlpha(glow, glow.a / 255.0f * (1.0f / i)));
+    DrawCircleGradient(sun, r * 4.2f, withAlpha(glow, 0.16f), BLANK);
     DrawCircleV(sun, r, disc);
+    DrawCircleGradient({sun.x - r * 0.2f, sun.y - r * 0.2f}, r * 0.8f,
+                       withAlpha(WHITE, 0.3f), BLANK);
+
+    // Broad shafts of haze sit behind the clouds and hills.
+    for (int i = 0; i < 5; ++i) {
+        float end = sun.x + (i - 2) * sw * 0.3f + sinf(t * 0.08f) * 30;
+        DrawTriangle(sun, {end - sw * 0.11f, (float)sh}, {end + sw * 0.11f, (float)sh},
+                     withAlpha(disc, 0.025f));
+    }
 
     // Clouds drifting with the wind.
     bool hell = th.weather == Weather::Embers;
-    Color cloud = hell ? Color{60, 20, 20, 150} : Color{255, 255, 255, 190};
+    Color cloud = hell ? mixC(th.skyBottom, Color{60, 20, 20, 255}, 0.8f) : mixC(th.skyBottom, WHITE, 0.88f);
     float span = sw + 400.0f;
     for (int i = 0; i < 9; i++) {
         float base = hash1(i * 3.7f) * span;
@@ -71,6 +80,19 @@ void drawSky(const Game& g, int sw, int sh, float t) {
         for (int k = 0; k < 5; k++) {
             float ox = (k - 2) * 26 * s, oy = -fabsf((float)(k - 2)) * -6 * s - (k % 2) * 10 * s;
             DrawEllipse((int)(x + ox), (int)(y + oy), 34 * s, 20 * s, cloud);
+        }
+    }
+
+    // A few distant birds, deterministic and purely visual.
+    if (th.weather == Weather::Leaves || th.weather == Weather::Dust) {
+        for (int i = 0; i < 6; ++i) {
+            float x = fmodf(sw * hash1(i + 23) + t * (9 + i) - camX * 0.08f, sw + 80.0f);
+            if (x < 0) x += sw + 80;
+            float y = sh * (0.18f + hash1(i + 42) * 0.18f) + sinf(t * 0.8f + i) * 9;
+            float wing = sinf(t * 4 + i * 2) * 3;
+            Color c = withAlpha(th.hillFar, 0.65f);
+            DrawLineEx({x - 5, y - wing}, {x, y}, 1.5f, c);
+            DrawLineEx({x, y}, {x + 5, y - wing}, 1.5f, c);
         }
     }
 
@@ -267,6 +289,11 @@ void renderWorld(Game& g) {
         pose.showAim = active && !walking && info.aims && !g.panelOpen && !(roped && info.mode == FireMode::Rope) &&
                        g.rope.state != NinjaRope::State::Shooting;
         pose.power = g.charging ? g.power : 0;
+        Vector2 wp = w->pixelPos();
+        if (w->grounded && !w->drowned) {
+            DrawEllipse((int)wp.x, (int)(wp.y + 6), 13, 3.5f, Color{8, 10, 20, 85});
+            if (pose.active) DrawEllipseLines((int)wp.x, (int)(wp.y + 6), 17, 5, withAlpha(pose.teamColor, 0.65f));
+        }
         Sprites::drawWorm(*w, pose);
     }
 
@@ -278,6 +305,19 @@ void renderWorld(Game& g) {
     // Near waves, in front of everything.
     drawWater(g, Terrain::WATER_Y, th.waterTop, th.waterDeep, 0.78f, 4.0f, 0.0f, t);
     drawWater(g, Terrain::WATER_Y + 12, mixC(th.waterTop, th.waterDeep, 0.3f), th.waterDeep, 0.85f, 3.0f, 2.9f, t);
+
+    // Broken highlights and foam give the water depth without extra textures.
+    Vector2 waterTL = g.camera.screenToWorld({0, 0});
+    Vector2 waterBR = g.camera.screenToWorld({(float)sw, (float)sh});
+    for (int i = 0; i < 90; ++i) {
+        float span = waterBR.x - waterTL.x + 60;
+        float x = waterTL.x + fmodf(hash1(i + 17) * span + t * (5 + g.wind * 8) + span * 100, span) - 30;
+        float depth = hash1(i + 73) * 160;
+        float y = Terrain::WATER_Y + 8 + depth + sinf(t * 1.8f + i) * 3;
+        float shimmer = 0.06f + 0.14f * std::pow(0.5f + 0.5f * sinf(t * 2.2f + i * 3), 3);
+        DrawLineEx({x, y}, {x + 5 + depth * 0.13f, y}, 1.3f,
+                   withAlpha(mixC(th.waterTop, WHITE, 0.75f), shimmer));
+    }
 
     // Targeting cursor for air strikes / teleport.
     if (g.isTargeting()) {
@@ -301,6 +341,9 @@ void renderWorld(Game& g) {
     EndMode2D();
 
     drawWeather(g, sw, sh, GetFrameTime());
+    // Soft edge shading leaves the world legible and the HUD crisp.
+    DrawRectangleGradientV(0, 0, sw, 80, Color{8, 12, 25, 45}, BLANK);
+    DrawRectangleGradientV(0, sh - 100, sw, 100, BLANK, Color{8, 12, 25, 65});
     drawWormLabels(g);
     g.fx.drawText(toScreen, g.camera.zoom);
 }

@@ -7,6 +7,9 @@ namespace Audio {
 void init();                       // InitAudioDevice() + synthesize all sounds. Safe to call once.
 // Play a named sound. Unknown names are silently ignored. volume 0..1, pitch multiplier (1 = normal).
 void playSound(const char* name, float volume = 1.0f, float pitch = 1.0f);
+void update(float dt, bool inMatch, float wind, int theme);
+void setMix(float effects, float music);
+void playRemote(int id, float volume, float pitch);
 void setMasterVolume(float v);     // 0..1
 
 } // namespace Audio

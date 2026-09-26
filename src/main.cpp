@@ -1,3 +1,4 @@
+#include "net/input.h"
 #include <raylib.h>
 #ifdef __EMSCRIPTEN__
 #include <emscripten.h>
@@ -20,6 +21,9 @@
 namespace {
 
 Game* game = nullptr;
+bool onlineGuest = false;
+bool onlineStart = false;
+bool onlineLeave = false;
 
 struct Menu {
     int teams = 2;
@@ -107,10 +111,10 @@ void refreshPreview() {
 
 void startGame() {
     GameConfig cfg;
-    cfg.teams = menu.teams;
+    cfg.teams = Input::online ? 2 : menu.teams;
     cfg.wormsPerTeam = menu.worms;
     cfg.startHp = menu.energy;
-    cfg.vsCpu = menu.vsCpu;
+    cfg.vsCpu = Input::online ? false : menu.vsCpu;
     cfg.seed = menuSeed();
     cfg.theme = menuTheme();
     game = new Game(cfg);
@@ -260,9 +264,26 @@ void fitWindowToPage() {
 
 void frame() {
     fitWindowToPage();
+    if (onlineLeave) {
+        delete game;
+        game = nullptr;
+        Input::online = Input::connected = onlineGuest = onlineStart = onlineLeave = false;
+        Input::reset();
+        accumulator = 0;
+    }
+    if (onlineStart) {
+        onlineStart = false;
+        delete game;
+        game = nullptr;
+        startGame();
+        accumulator = 0;
+    }
+    if (onlineGuest) return; // display the host's video; sound events play locally
+    Audio::update(std::min(GetFrameTime(), 0.1f), game != nullptr, game ? game->wind : 0,
+                  game ? game->cfg.theme : menuTheme());
 
     if (!game) {
-        updateMenu();
+        if (!Input::blocked) updateMenu();
         BeginDrawing();
         drawMenu();
         EndDrawing();
@@ -274,8 +295,12 @@ void frame() {
     accumulator += dt;
     int steps = 0;
     double t0 = GetTime();
-    game->frameInput();
-    while (accumulator >= TICK && steps < MAX_STEPS_PER_FRAME) {
+    Input::beginFrame(game->currentTeam, game->turnNumber);
+    bool paused = Input::online && !Input::connected;
+    if (!paused) game->frameInput();
+    else accumulator = 0;
+    while (!paused && accumulator >= TICK && steps < MAX_STEPS_PER_FRAME) {
+        Input::setTurn(game->currentTeam, game->turnNumber);
         game->update((float)TICK);
         accumulator -= TICK;
         steps++;
@@ -286,7 +311,15 @@ void frame() {
     BeginDrawing();
     ClearBackground(BLACK);
     game->draw();
+    if (paused) {
+        DrawRectangle(0, 0, GetScreenWidth(), GetScreenHeight(), Color{10, 16, 30, 170});
+        Text::drawCentered("Connection interrupted - match paused", {GetScreenWidth() / 2.0f, GetScreenHeight() / 2.0f}, 26, WHITE, BLACK);
+    }
     EndDrawing();
+#ifdef __EMSCRIPTEN__
+    EM_ASM({ if (window.SquirmsOnline) window.SquirmsOnline.state($0, $1, $2, $3); },
+           game->currentTeam, game->turnNumber, (int)game->phase, game->matchTime);
+#endif
     double t2 = GetTime();
     // Smoothed timings for the F1 overlay.
     game->perfUpdateMs += ((float)(t1 - t0) * 1000.0f - game->perfUpdateMs) * 0.1f;
@@ -295,11 +328,40 @@ void frame() {
     if (game->wantsExit()) {
         delete game;
         game = nullptr;
+        accumulator = 0;
+#ifdef __EMSCRIPTEN__
+        EM_ASM({ if (window.SquirmsOnline) window.SquirmsOnline.matchEnded(); });
+#endif
         rerollMenu();
     }
 }
 
 } // namespace
+
+#ifdef __EMSCRIPTEN__
+extern "C" {
+EMSCRIPTEN_KEEPALIVE void squirms_ui(int blocked) { Input::blocked = blocked != 0; }
+EMSCRIPTEN_KEEPALIVE int squirms_in_match() { return game != nullptr; }
+EMSCRIPTEN_KEEPALIVE void squirms_online(int role, int connected) {
+    if (role == 0) { onlineLeave = true; return; }
+    onlineGuest = role == 2;
+    if (role == 1 && !Input::online) onlineStart = true;
+    Input::online = true;
+    Input::connected = connected != 0;
+}
+EMSCRIPTEN_KEEPALIVE void squirms_input(int turn, unsigned keys, unsigned pressed,
+        unsigned buttons, unsigned clicks, float x, float y, float wheel) {
+    Input::receive(turn, keys, pressed, buttons, clicks, x, y, wheel);
+}
+EMSCRIPTEN_KEEPALIVE void squirms_audio(float effects, float music, int muted) {
+    Audio::setMix(effects, music);
+    Audio::setMasterVolume(muted ? 0.0f : 0.8f);
+}
+EMSCRIPTEN_KEEPALIVE void squirms_sound(int id, float volume, float pitch) {
+    Audio::playRemote(id, volume, pitch);
+}
+}
+#endif
 
 int main() {
     SetConfigFlags(FLAG_MSAA_4X_HINT | FLAG_WINDOW_RESIZABLE);

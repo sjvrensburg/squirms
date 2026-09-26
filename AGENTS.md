@@ -6,7 +6,7 @@
 ## Build
 - `emcmake cmake -B build` – configure (only needed after CMakeLists.txt changes or a fresh clone/deleted `build/`).
 - `cmake --build build` – compile; produces `build/squirms_wasm.js` / `.wasm`.
-- `cp build/squirms_wasm.js build/squirms_wasm.wasm dist/ && cp index.html dist/` – stage the playable build.
+- `cmake --build build --target stage` – stage the playable build.
 - `PATH=$PATH:$(pwd)/emsdk/upstream/emscripten emrun dist/index.html` – serve and open in a browser.
 
 ## Gameplay shortcuts (in-engine menu, no URL params)
@@ -21,7 +21,7 @@
 - Weapons: table in `src/weapons/weapons.cpp`, behaviour in `src/game/weapons.cpp`, picked from the Tab weapon panel.
 - No image/sound assets: sprites are procedural (`render/sprites.cpp`), sounds are synthesized (`audio/sfx.cpp`); the Montserrat font in `assets/fonts` is embedded via `--embed-file`.
 - New `.cpp` files need a re-run of `emcmake cmake -B build` (sources are globbed).
-- raylib/GLFW3 own the canvas and input directly under Emscripten — there is no JS/TS game logic, only the minimal `Module.canvas` bootstrap snippet in `index.html`.
+- raylib/GLFW3 own the local canvas under Emscripten. `web/online.js` handles room pairing and WebRTC remote play; simulation stays in C++. Use `node server/server.mjs` for online rooms (see README).
 
 ## Testing workflow
 1. `cmake --build build` and confirm it exits 0 with no new warnings.

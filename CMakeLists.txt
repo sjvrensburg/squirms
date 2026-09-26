@@ -56,8 +56,8 @@ target_link_libraries(squirms_wasm PRIVATE
 )
 
 # Link flags. The game drives its own main loop via emscripten_set_main_loop
-# and raylib/GLFW3 owns the canvas (id="canvas") directly, so no JS glue
-# (MODULARIZE, embind, cwrap/ccall) is needed to boot or drive it.
+# and raylib/GLFW3 owns the canvas. The browser shell calls the small
+# EMSCRIPTEN_KEEPALIVE bridge in main.cpp for online input and sound settings.
 target_link_options(squirms_wasm PRIVATE
     -sENVIRONMENT=web
     -sALLOW_MEMORY_GROWTH=1
@@ -66,9 +66,19 @@ target_link_options(squirms_wasm PRIVATE
     -sUSE_WEBGPU=0
     -sUSE_GLFW=3
     -sSTRICT=0
-    # Fonts are baked into the build so dist/ stays just index.html + js + wasm.
+    # Embed fonts so the shell needs no separate font downloads.
     --embed-file ${CMAKE_SOURCE_DIR}/assets/fonts@/assets/fonts
 )
 set_property(TARGET squirms_wasm APPEND PROPERTY LINK_DEPENDS
     ${CMAKE_SOURCE_DIR}/assets/fonts/Montserrat-Black.otf
     ${CMAKE_SOURCE_DIR}/assets/fonts/Montserrat-Bold.otf)
+
+# Keep the complete playable bundle together, including browser transport/UI.
+add_custom_target(stage
+    COMMAND ${CMAKE_COMMAND} -E make_directory ${CMAKE_SOURCE_DIR}/dist/web
+    COMMAND ${CMAKE_COMMAND} -E copy $<TARGET_FILE:squirms_wasm> ${CMAKE_SOURCE_DIR}/dist/
+    COMMAND ${CMAKE_COMMAND} -E copy ${CMAKE_CURRENT_BINARY_DIR}/squirms_wasm.wasm ${CMAKE_SOURCE_DIR}/dist/
+    COMMAND ${CMAKE_COMMAND} -E copy ${CMAKE_SOURCE_DIR}/index.html ${CMAKE_SOURCE_DIR}/dist/
+    COMMAND ${CMAKE_COMMAND} -E copy_directory ${CMAKE_SOURCE_DIR}/web ${CMAKE_SOURCE_DIR}/dist/web
+    DEPENDS squirms_wasm
+)
