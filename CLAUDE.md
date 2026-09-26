@@ -14,11 +14,26 @@ There are no image or sound assets: sprites are drawn procedurally (`render/spri
 source emsdk/emsdk_env.sh          # activate the local Emscripten SDK (once per shell; not tracked in git)
 emcmake cmake -B build              # configure (re-run if CMakeLists.txt changes)
 cmake --build build                 # compile -> build/squirms_wasm.{js,wasm}
-cmake --build build --target stage
-PATH=$PATH:$(pwd)/emsdk/upstream/emscripten emrun dist/index.html   # serve + open in a browser
+cmake --build build --target stage  # assemble dist/ (wasm + index.html + web/)
+node server/server.mjs              # Node 22+; serves dist/ + room signaling on http://localhost:8080
+PATH=$PATH:$(pwd)/emsdk/upstream/emscripten emrun dist/index.html   # alternative static serve (no online rooms)
 ```
 
-Run the server, input-boundary and two-browser integration tests documented in README. Also verify changes in foreground browser tabs (see "Headless browser testing" below).
+Tests (no npm deps; `node --test` is Node's built-in runner):
+
+```bash
+node --test tests/server.test.mjs   # signaling server: rooms, auth, validation, static isolation
+# input boundary, native g++ against raylib stubs (no emsdk needed):
+g++ -std=c++17 -Wall -Wextra -Isrc -Ivendor/raylib/include tests/input_test.cpp src/net/input.cpp -o /tmp/squirms-input-test && /tmp/squirms-input-test
+# two real headless Chromes over WebRTC; run `--target stage` first; needs google-chrome (or CHROME=...):
+node --test tests/browser.test.mjs
+node --test --test-name-pattern='local weapons' tests/browser.test.mjs   # a single test
+HEADFUL=1 node --test --test-name-pattern='local weapons' tests/browser.test.mjs  # visible browsers
+```
+
+There is no linter; treat new compiler warnings from `cmake --build build` as failures. Also verify changes in foreground browser tabs, because headless timing and audio don't match real ones (see "Headless browser testing" below).
+
+`AGENTS.md` is a shorter cheat sheet of the same content for other agents. If you change commands or gotchas here, update it to match.
 
 `emcmake cmake -B build` must also be re-run after **adding a new `.cpp` file**: sources are collected with `file(GLOB_RECURSE ...)`, so a plain `cmake --build` won't see it (you'll get an undefined-symbol link error).
 
@@ -32,12 +47,11 @@ src/
   core/rng.*, math.*       Seeded RNG (mulberry32), small math helpers
   terrain/noise.*          Gradient noise + fBm
   terrain/generate.*       Island generator: fBm heightfield tapered into the sea, 2D warp for
-                           overhangs, ridged-noise tunnels + caverns, bedrock floor; prunes anything
-                           not connected to the floor so nothing collapses on turn one
+                           overhangs, ridged-noise tunnels + caverns, bedrock floor; props long
+                           spans with rock pillars and removes what can't stand (see below)
   terrain/grid.*           Jittered convex quad chunks; CELL/PPM/WORLD_*/COLS/ROWS/WATER_Y constants
-  terrain/support.*        Flood-fill support detection: BFS from bedrock/bottom-row chunks
-                           through solid 4-adjacency: reachable = grounded, everything else
-                           in a SOLID chunk is a floating cluster that gets thawed to dynamic
+  terrain/support.*        Structural support model: cheapest load path to bedrock with a span
+                           limit; unsupported clusters get thawed to dynamic (see below)
   terrain/terrain.*        TerrainSystem (fixture creation, thaw-to-dynamic, refreeze, sinking,
                            `dirty` list for the renderer)
   physics/world.*          Thin Box2D wrapper (bodies, polygon/circle fixtures, collision filters,
@@ -63,11 +77,27 @@ src/
   render/text.*            Font loading (embedded Montserrat) and outlined text helpers
   render/theme.*           Landscape themes (Meadow/Desert/Arctic/Hell palettes + weather)
   render/rlgl_min.h        Hand-declared rlgl entry points (the vendored raylib ships no rlgl.h)
-  audio/sfx.*              Procedurally synthesized sound effects (Audio::playSound(name, vol, pitch))
+  audio/sfx.*              Synthesized effects (Audio::playSound(name, vol, pitch)), ambient score,
+                           wind, effects/music mix
+  net/input.*              Gameplay input layer: local keys, or the online guest's validated input
+index.html, web/           Browser shell: online.js (room pairing, WebRTC video/data channel,
+                           sound prefs, fullscreen), shell.css
+server/server.mjs          Node static server for dist/ + in-memory room signaling (/api/*)
+tests/                     server + browser tests (node --test), input_test.cpp (native)
 assets/fonts/              Montserrat (SIL OFL), embedded into the build
 vendor/                    Prebuilt raylib + Box2D 2.4 static libs for WASM (headers + .a)
 emsdk/                     Local Emscripten SDK install (gitignored — see Commands)
 ```
+
+### Online play and the JS bridge
+
+Online play is host-authoritative remote play. Only the host runs the simulation. It streams its canvas to the guest over WebRTC, and the guest sends back raw input on a data channel. Keep that in mind when changing gameplay:
+
+- **Gameplay code reads input through `Input::` (`net/input.h`), never raylib's `IsKey*`/`IsMouseButton*`/`GetMousePosition` directly.** When the guest's team (team index 1) has the turn, `Input::` returns the guest's received input. That input is stamped with the turn id (stale turns are dropped), non-finite values are rejected, the mouse position is clamped from 0–1 into host screen space, and held keys release after 0.6 s without a message. Raw raylib input bypasses all of this and would let the host's keyboard drive the guest's worms. Only the start menu in `main.cpp` reads raylib directly.
+- **Remote keys are a fixed bitmask** (`bit()` in `net/input.cpp`, mirrored in `web/online.js`): arrows/WASD, Space, Enter, Backspace, Tab, H, 1–5, plus 3 mouse buttons. A new gameplay key binding does nothing for the guest until it is added to both.
+- **C++ ↔ JS bridge**: the `EMSCRIPTEN_KEEPALIVE extern "C" squirms_*` functions at the bottom of `main.cpp` are called from `web/online.js` as `Module._squirms_*` (online role/connection, guest input, UI blocking, audio mix, remote sounds). Change both sides together, and keep the argument order in sync with `Input::receive`.
+- **Sound relay**: on the host, `Audio::playSound` also posts the sound's index in `DEFS` to `window.SquirmsOnline.sound`, and the guest replays it with `Audio::playRemote`. So a new sound must be a `DEFS` entry, and sounds are identified by index (host and guest must run the same build).
+- Debug terrain editing (F1 + click) is disabled online.
 
 ### Coordinate conventions (read this before touching physics/terrain/camera code)
 
